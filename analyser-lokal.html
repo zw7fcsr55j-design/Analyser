@@ -1,0 +1,2348 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trade Republic Analyser — lokale Version</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;color:#fff;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  #boot{padding:40px 20px;max-width:560px;margin:0 auto;font-size:14px;line-height:1.6;color:#9BA1A6}
+  #boot b{color:#fff;display:block;margin-bottom:6px;font-size:16px}
+</style>
+</head>
+<body>
+<div id="root"><div id="boot"><b>Trade Republic Analyser wird geladen…</b>React, Babel und der TradingView-Chart werden geholt. Das braucht eine Internetverbindung.</div></div>
+
+<script id="app-src" type="text/plain">
+const { useState, useMemo, useRef } = React;
+
+
+/* ============================================================================
+   TRADE REPUBLIC ANALYSER — mehrdimensionale Aktienbewertung
+   ----------------------------------------------------------------------------
+   Aufbau (bewusst getrennt, wie im Briefing gefordert):
+     1. DATENSCHICHT   -> COMPANIES + loadCompany() (Adapter, austauschbar)
+     2. RECHENSCHICHT  -> dcf(), multiples(), ddm(), graham(), composite(), ...
+     3. DARSTELLUNG    -> React-Komponenten, greifen nur auf Ergebnisse zu
+   Die Demodaten sind illustrativ. Für Live-Betrieb siehe Abschnitt "Daten".
+   ========================================================================== */
+
+const CSS = `
+:root{
+  --ground:#000000; --panel:#131316; --panel2:#1C1C1F; --line:#2A2A2E;
+  --ink:#FFFFFF; --muted:#9BA1A6; --faint:#6B7075;
+  --cheap:#00C46A;            /* nur Gewinn */
+  --rich:#FF453A;             /* nur Verlust */
+  --fair:#FFFFFF;             /* neutral, keine Farbe */
+  --accent:#FFFFFF;           /* Bedienelemente: weiß, nicht bunt */
+  --shadow:none;
+}
+*{box-sizing:border-box}
+.kb{background:var(--ground);color:var(--ink);min-height:100%;
+  font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:15px;line-height:1.5;padding-bottom:64px;letter-spacing:-.005em}
+.kb .num{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kb h1,.kb h2,.kb h3{margin:0;font-weight:700;letter-spacing:-.02em}
+.kb p{margin:0 0 10px}
+.kb-wrap{max-width:960px;margin:0 auto;padding:0 16px}
+.kb-serif{font-family:inherit;font-weight:400}
+
+/* header */
+.kb-top{position:sticky;top:0;z-index:30;background:rgba(5,5,5,.92);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.kb-brand{display:flex;align-items:baseline;gap:10px;padding:14px 0 10px}
+.kb-brand b{font-size:18px;letter-spacing:-.02em;font-weight:800}
+.kb-brand span{font-size:12px;color:var(--faint)}
+.kb-search{position:relative;padding-bottom:12px}
+.kb-search input{width:100%;background:var(--panel2);border:1px solid transparent;
+  color:var(--ink);border-radius:14px;padding:13px 16px;font-size:15px;outline:none}
+.kb-search input:focus{border-color:var(--accent)}
+.kb-sug{position:absolute;left:0;right:0;top:100%;background:var(--panel2);
+  border:1px solid var(--line);border-radius:16px;overflow:hidden;z-index:40;
+  box-shadow:0 20px 40px rgba(0,0,0,.6);margin-top:6px}
+.kb-sug button{display:flex;width:100%;justify-content:space-between;gap:12px;
+  background:none;border:0;border-bottom:1px solid var(--line);color:var(--ink);
+  padding:13px 16px;text-align:left;cursor:pointer;font-size:14px}
+.kb-sug button:last-child{border-bottom:0}
+.kb-sug button:hover,.kb-sug button:focus{background:var(--panel);outline:none}
+.kb-sug small{color:var(--faint)}
+
+/* tabs — segmented pill bar, Trade-Republic-artig */
+.kb-tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;
+  background:var(--panel2);border-radius:999px;padding:3px;margin-bottom:12px}
+.kb-tabs::-webkit-scrollbar{display:none}
+.kb-tabs button{background:none;border:0;border-radius:999px;
+  color:var(--muted);padding:8px 14px;font-size:13px;font-weight:600;white-space:nowrap;cursor:pointer;
+  transition:background .15s,color .15s}
+.kb-tabs button[data-on="1"]{color:#000;background:#fff}
+
+/* panels */
+.kb-panel{background:var(--panel);border:1px solid transparent;border-radius:20px;
+  padding:20px;margin:12px 0;box-shadow:var(--shadow)}
+.kb-lede{font-size:13px;color:var(--muted);margin:0 0 12px}
+.kb-h{font-size:16px;margin-bottom:2px;font-weight:700}
+.kb-sub{font-size:13px;color:var(--faint);margin-bottom:14px}
+.kb-rule{height:1px;background:var(--line);margin:16px 0}
+
+/* band */
+.kb-band{position:relative;height:64px;margin:26px 0 8px}
+.kb-band .track{position:absolute;top:26px;left:0;right:0;height:6px;
+  background:var(--panel2);border-radius:999px}
+.kb-band .span{position:absolute;top:24px;height:10px;border-radius:999px;
+  background:linear-gradient(90deg,rgba(255,69,58,.5),rgba(255,255,255,.25),rgba(0,196,106,.5))}
+.kb-band .base{position:absolute;top:18px;width:2px;height:22px;background:var(--ink)}
+.kb-band .now{position:absolute;top:8px;width:2px;height:42px;background:#fff;
+  transition:left .45s cubic-bezier(.2,.7,.3,1)}
+.kb-band .tag{position:absolute;transform:translateX(-50%);font-size:11px;white-space:nowrap}
+.kb-band .tag.up{top:-12px;color:#fff;font-weight:700}
+.kb-band .tag.dn{top:46px;color:var(--muted)}
+
+/* generic bits */
+.kb-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.kb-cell{background:var(--panel);padding:12px 14px}
+.kb-cell .k{font-size:11.5px;color:var(--faint);display:block;margin-bottom:3px}
+.kb-cell .v{font-size:17px;font-variant-numeric:tabular-nums;font-weight:700}
+.kb-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;
+  border-bottom:1px solid var(--line);font-size:14px}
+.kb-row:last-child{border-bottom:0}
+.kb-row .lbl{color:var(--muted)}
+.kb-pill{display:inline-block;padding:4px 11px;border-radius:999px;font-size:12px;font-weight:700;
+  border:1px solid transparent;color:var(--ink);background:var(--panel2)}
+.kb-bar{height:6px;background:var(--panel2);border-radius:999px;overflow:hidden;margin-top:6px}
+.kb-bar i{display:block;height:100%;border-radius:999px}
+.kb-note{font-size:12.5px;color:var(--faint);line-height:1.55}
+.kb-warn{border:1px solid var(--line);background:var(--panel2);
+  padding:13px 15px;border-radius:14px;font-size:13px;margin:12px 0}
+.kb-info{border:1px solid var(--line);background:var(--panel2);
+  padding:13px 15px;border-radius:14px;font-size:13px;margin:12px 0}
+.kb-body{font-size:15px;line-height:1.62;max-width:66ch}
+
+/* slider */
+.kb-sl{margin:16px 0}
+.kb-sl .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.kb-sl .top b{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.kb-sl input[type=range]{width:100%;accent-color:#fff;height:22px}
+.kb-sl small{color:var(--faint);font-size:11.5px}
+
+/* table */
+.kb-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.kb-tbl th{text-align:right;color:var(--faint);font-weight:600;padding:8px 6px;
+  border-bottom:1px solid var(--line);font-size:11.5px}
+.kb-tbl th:first-child,.kb-tbl td:first-child{text-align:left}
+.kb-tbl td{text-align:right;padding:9px 6px;border-bottom:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
+.kb-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* sensitivity heat */
+.kb-heat{display:grid;gap:3px;font-size:11.5px;font-variant-numeric:tabular-nums}
+.kb-heat div{padding:8px 4px;text-align:center;border-radius:8px}
+
+.kb-btn{background:var(--panel2);border:1px solid transparent;color:var(--ink);
+  border-radius:999px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.kb-btn[data-on="1"]{background:#fff;color:#000}
+.kb-btn:focus-visible,.kb-tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.kb-gl-cat{font-size:11.5px;color:var(--faint);margin:20px 0 2px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em}
+.kb-gl-item{padding:13px 0;border-bottom:1px solid var(--line)}
+.kb-gl-item:last-child{border-bottom:0}
+.kb-gl-item b{display:block;font-size:14.5px;margin-bottom:4px;font-weight:700}
+.kb-gl-item p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.58}
+.kb-gl-item .rule{margin-top:6px;font-size:12.5px;color:var(--faint);line-height:1.5}
+.kb-gl-empty{color:var(--faint);font-size:13.5px;padding:18px 0}
+.kb-wl{display:flex;flex-direction:column;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.kb-wl button{display:flex;width:100%;align-items:center;gap:12px;background:var(--panel);
+  border:0;color:var(--ink);padding:14px 16px;text-align:left;cursor:pointer;font-size:14px}
+.kb-wl button:hover{background:var(--panel2)}
+.kb-wl .who{flex:1;min-width:0}
+.kb-wl .who b{display:block;font-size:14.5px;font-weight:700}
+.kb-wl .who small{color:var(--faint);font-size:11.5px}
+.kb-wl .fig{text-align:right;font-variant-numeric:tabular-nums;flex-shrink:0}
+.kb-wl .fig b{display:block;font-size:14.5px;font-weight:700}
+.kb-wl .fig small{font-size:12px}
+.kb-star{background:none;border:0;color:var(--faint);font-size:19px;cursor:pointer;
+  padding:2px 6px;line-height:1}
+.kb-star[data-on="1"]{color:var(--ink)}
+.kb-foot{font-size:12px;color:var(--faint);line-height:1.6;border-top:1px solid var(--line);
+  margin-top:26px;padding-top:16px}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--muted)}
+pre{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:14px;
+  overflow-x:auto;font-size:11.5px;line-height:1.5;color:var(--muted)}
+@media (min-width:700px){ .kb-grid{grid-template-columns:repeat(4,1fr)} .kb{font-size:15.5px} }
+@media (prefers-reduced-motion:reduce){ .kb-band .now{transition:none} }
+
+/* chat */
+.kb-chat-fab{position:fixed;right:16px;bottom:16px;z-index:50;width:56px;height:56px;
+  border-radius:50%;background:#fff;color:#000;border:0;cursor:pointer;
+  font-size:22px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 10px 24px rgba(0,0,0,.6)}
+.kb-chat-fab:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.kb-chat{position:fixed;right:16px;bottom:16px;z-index:51;width:min(380px,calc(100vw - 32px));
+  height:min(560px,calc(100vh - 32px));background:var(--panel);border:1px solid var(--line);
+  border-radius:24px;display:flex;flex-direction:column;overflow:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.65)}
+.kb-chat-head{display:flex;justify-content:space-between;align-items:center;
+  padding:14px 16px;border-bottom:1px solid var(--line);background:var(--panel2)}
+.kb-chat-head b{font-size:14px;font-weight:700}
+.kb-chat-head span{display:block;font-size:11px;color:var(--faint);margin-top:1px}
+.kb-chat-close{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer;padding:2px 6px}
+.kb-chat-body{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.kb-msg{max-width:88%;font-size:13.5px;line-height:1.5;padding:10px 13px;border-radius:16px;white-space:pre-wrap}
+.kb-msg.user{align-self:flex-end;background:#fff;color:#000;border-bottom-right-radius:5px}
+.kb-msg.bot{align-self:flex-start;background:var(--panel2);border:1px solid var(--line);border-bottom-left-radius:5px}
+.kb-msg.sys{align-self:center;color:var(--faint);font-size:11.5px;text-align:center;background:none;border-radius:0}
+.kb-chat-empty{color:var(--faint);font-size:13px;line-height:1.55;padding:6px 2px}
+.kb-chat-empty .qs{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.kb-chat-foot{border-top:1px solid var(--line);padding:12px;display:flex;gap:8px;background:var(--panel2)}
+.kb-chat-foot textarea{flex:1;resize:none;background:var(--ground);border:1px solid var(--line);
+  color:var(--ink);border-radius:14px;padding:9px 12px;font-size:13.5px;font-family:inherit;
+  outline:none;max-height:80px}
+.kb-chat-foot textarea:focus{border-color:var(--accent)}
+.kb-chat-send{background:#fff;border:0;color:#000;border-radius:14px;
+  padding:0 16px;font-size:13px;cursor:pointer;font-weight:700}
+.kb-chat-send:disabled{opacity:.4;cursor:default}
+.kb-typing{display:flex;gap:4px;padding:4px 0}
+.kb-typing i{width:5px;height:5px;border-radius:50%;background:var(--faint);
+  animation:kbTyping 1s infinite ease-in-out}
+.kb-typing i:nth-child(2){animation-delay:.15s}
+.kb-typing i:nth-child(3){animation-delay:.3s}
+@keyframes kbTyping{0%,60%,100%{opacity:.3}30%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.kb-typing i{animation:none}}
+`;
+
+/* ============================================================================
+   1. DATENSCHICHT
+   Alle Beträge in Mio. der jeweiligen Währung, Kurse/Je-Aktie-Werte in Einheiten.
+   Demo-Snapshot: gerundete, illustrative Größenordnungen – keine Live-Kurse.
+   ========================================================================== */
+
+const COMPANIES = [
+  {
+    t: "AAPL", name: "Apple Inc.", sector: "Technologie · Hardware", peers: ["MSFT", "NVDA", "GOOGL"],
+    cur: "$", profile: "standard", price: 232.4, shares: 15000,
+    eps: 6.9, epsFwd: 7.6, bvps: 4.4, sps: 26.5, dps: 1.02,
+    fcf: 105000, ebitda: 137000, ebit: 125000, revenue: 400000, netIncome: 103000,
+    netDebt: 55000, ta: 365000, tl: 300000, equity: 65000, re: -5000, wc: -2000,
+    roic: 0.55, roe: 1.6, gm: 0.46, om: 0.31, nm: 0.26,
+    hist: { pe: 27, ps: 6.5, ev: 20, pb: 40 }, sect: { pe: 28, ps: 6.0, ev: 18, pb: 11 },
+    g: { rev5: 0.08, eps5: 0.12, fwd: 0.08 },
+    beta: 1.15, vol: 0.24, divY: 0.0044, payout: 0.15, buyback: 0.03, shortInt: 0.008,
+    moatScore: 9,
+    moat: "Sehr breiter Burggraben: geschlossenes Ökosystem, hohe Wechselkosten, Preissetzungsmacht und ein wachsender Service-Anteil mit deutlich höherer Marge als die Hardware.",
+    mgmt: "Kapitalallokation stark auf Rückkäufe ausgerichtet (rund 3 % der Aktien pro Jahr), niedrige Ausschüttungsquote, kaum große Zukäufe. Bilanz bewusst mit Netto-Schulden geführt.",
+    risks: ["China als Produktions- und Absatzmarkt zugleich", "Abhängigkeit vom iPhone-Zyklus (rund die Hälfte des Umsatzes)", "Zahlungen aus dem Google-Suchvertrag stehen kartellrechtlich unter Druck", "Regulierung des App Store in der EU"],
+    concentration: ["iPhone ≈ 50 % Umsatz", "Greater China ≈ 18 % Umsatz", "Fertigung stark auf Foxconn/Asien konzentriert"],
+    flags: [],
+  },
+  {
+    t: "MSFT", name: "Microsoft Corp.", sector: "Technologie · Software", peers: ["AAPL", "GOOGL", "SAP"],
+    cur: "$", profile: "standard", price: 415.0, shares: 7440,
+    eps: 12.9, epsFwd: 14.5, bvps: 45.0, sps: 34.3, dps: 3.3,
+    fcf: 74000, ebitda: 145000, ebit: 128000, revenue: 255000, netIncome: 96000,
+    netDebt: 20000, ta: 520000, tl: 190000, equity: 330000, re: 175000, wc: 35000,
+    roic: 0.28, roe: 0.33, gm: 0.69, om: 0.45, nm: 0.36,
+    hist: { pe: 32, ps: 11, ev: 23, pb: 12 }, sect: { pe: 30, ps: 9, ev: 21, pb: 10 },
+    g: { rev5: 0.14, eps5: 0.16, fwd: 0.13 },
+    beta: 0.95, vol: 0.22, divY: 0.008, payout: 0.25, buyback: 0.01, shortInt: 0.007,
+    moatScore: 9,
+    moat: "Vertriebsmacht über Windows, Office und Azure, sehr hohe Wechselkosten im Unternehmensgeschäft und ein Cloud-Geschäft mit wiederkehrenden Umsätzen.",
+    mgmt: "Konsistente Kapitalallokation: steigende Dividende, moderate Rückkäufe, sehr hohe Investitionen in Rechenzentren. Diese Investitionen drücken aktuell den freien Cashflow.",
+    risks: ["Kapitalintensität der KI-Investitionen belastet Renditen", "Abhängigkeit von OpenAI-Partnerschaft", "Kartellverfahren zu Cloud-Lizenzen in Europa"],
+    concentration: ["Cloud/Azure als Haupt-Wachstumstreiber", "Enterprise-Kunden, wenig Privatkundenrisiko"],
+    flags: [],
+  },
+  {
+    t: "NVDA", name: "NVIDIA Corp.", sector: "Technologie · Halbleiter", peers: ["ASML", "MSFT", "AAPL"],
+    cur: "$", profile: "standard", price: 125.0, shares: 24500,
+    eps: 2.9, epsFwd: 4.2, bvps: 3.4, sps: 5.3, dps: 0.04,
+    fcf: 60000, ebitda: 85000, ebit: 82000, revenue: 130000, netIncome: 73000,
+    netDebt: -30000, ta: 96000, tl: 32000, equity: 64000, re: 30000, wc: 40000,
+    roic: 0.7, roe: 0.9, gm: 0.75, om: 0.62, nm: 0.55,
+    hist: { pe: 45, ps: 20, ev: 40, pb: 25 }, sect: { pe: 30, ps: 8, ev: 22, pb: 8 },
+    g: { rev5: 0.6, eps5: 0.7, fwd: 0.25 },
+    beta: 1.7, vol: 0.5, divY: 0.0003, payout: 0.01, buyback: 0.012, shortInt: 0.012,
+    moatScore: 8,
+    moat: "Faktischer Standard für KI-Training durch CUDA-Software-Ökosystem; der Burggraben liegt weniger im Chip als in den Entwicklerwerkzeugen und der installierten Basis.",
+    mgmt: "Sehr hohe Kapitalrendite, kaum Verschuldung, Rückkäufe aus laufendem Cashflow. Vorratspolitik und Vorauszahlungen an Auftragsfertiger binden zunehmend Kapital.",
+    risks: ["Extreme Zyklizität von Halbleiterinvestitionen", "Wenige Großkunden bauen eigene Chips", "Exportkontrollen China", "Fertigung faktisch allein bei TSMC"],
+    concentration: ["Vier Hyperscaler ≈ 40 % Umsatz", "Rechenzentrum ≈ 88 % Umsatz", "Fertigung: TSMC Taiwan"],
+    flags: [],
+  },
+  {
+    t: "GOOGL", name: "Alphabet Inc.", sector: "Technologie · Internet", peers: ["MSFT", "AAPL", "AMZN"],
+    cur: "$", profile: "standard", price: 168.0, shares: 12200,
+    eps: 8.0, epsFwd: 9.2, bvps: 26.0, sps: 28.7, dps: 0.8,
+    fcf: 60000, ebitda: 130000, ebit: 112000, revenue: 350000, netIncome: 100000,
+    netDebt: -70000, ta: 450000, tl: 130000, equity: 320000, re: 210000, wc: 70000,
+    roic: 0.3, roe: 0.32, gm: 0.58, om: 0.32, nm: 0.28,
+    hist: { pe: 24, ps: 6.0, ev: 16, pb: 6 }, sect: { pe: 28, ps: 6.0, ev: 18, pb: 7 },
+    g: { rev5: 0.13, eps5: 0.18, fwd: 0.11 },
+    beta: 1.05, vol: 0.28, divY: 0.0048, payout: 0.06, buyback: 0.025, shortInt: 0.01,
+    moatScore: 8,
+    moat: "Netzwerk- und Datenvorteile in Suche und YouTube, dazu eine Cloud-Sparte, die erst seit kurzem profitabel arbeitet. Der Burggraben der Suche wird durch KI-Assistenten erstmals ernsthaft angegriffen.",
+    mgmt: "Erstmals Dividende, laufende Rückkäufe, Kostendisziplin nach Jahren des Wildwuchses. Die Verlustsparten (Other Bets) sind klein, aber weiterhin defizitär.",
+    risks: ["KI-Assistenten könnten Suchanfragen abziehen", "Kartellverfahren zum Suchvertrieb in den USA", "Werbeerlöse sind konjunktursensibel"],
+    concentration: ["Werbung ≈ 75 % Umsatz", "Ein Geschäftsmodell trägt fast den gesamten Gewinn"],
+    flags: [],
+  },
+  {
+    t: "AMZN", name: "Amazon.com Inc.", sector: "Handel · Internet", peers: ["GOOGL", "MSFT", "AAPL"],
+    cur: "$", profile: "standard", price: 185.0, shares: 10500,
+    eps: 4.9, epsFwd: 6.2, bvps: 27.0, sps: 61.0, dps: 0,
+    fcf: 40000, ebitda: 120000, ebit: 68000, revenue: 640000, netIncome: 50000,
+    netDebt: 25000, ta: 585000, tl: 300000, equity: 285000, re: 100000, wc: 10000,
+    roic: 0.13, roe: 0.2, gm: 0.48, om: 0.106, nm: 0.078,
+    hist: { pe: 60, ps: 3.2, ev: 20, pb: 8 }, sect: { pe: 28, ps: 2.0, ev: 15, pb: 6 },
+    g: { rev5: 0.11, eps5: 0.25, fwd: 0.18 },
+    beta: 1.15, vol: 0.3, divY: 0, payout: 0, buyback: 0, shortInt: 0.009,
+    moatScore: 8,
+    moat: "Logistiknetz mit kaum kopierbarer Dichte, Prime-Bindung und mit AWS ein zweites, deutlich margenstärkeres Geschäft, das den Großteil des operativen Gewinns liefert.",
+    mgmt: "Keine Dividende, keine nennenswerten Rückkäufe: Cashflow fließt in Logistik und Rechenzentren. Kapitalallokation ist auf Wachstum statt Ausschüttung ausgelegt.",
+    risks: ["Sehr hohe Investitionsausgaben drücken den freien Cashflow", "Handelsmarge dünn und konjunkturabhängig", "Regulatorischer Druck auf Marktplatz-Praktiken"],
+    concentration: ["AWS liefert den Großteil des operativen Gewinns", "US-Konsum als Haupttreiber des Handelsgeschäfts"],
+    flags: [],
+  },
+  {
+    t: "TSLA", name: "Tesla Inc.", sector: "Automobil", peers: ["VOW3.DE", "AAPL", "NVDA"],
+    cur: "$", profile: "cyclical", price: 240.0, shares: 3200,
+    eps: 2.0, epsFwd: 2.6, bvps: 22.5, sps: 30.3, dps: 0,
+    fcf: 4500, ebitda: 12500, ebit: 7000, revenue: 97000, netIncome: 6500,
+    netDebt: -25000, ta: 120000, tl: 48000, equity: 72000, re: 30000, wc: 25000,
+    roic: 0.09, roe: 0.1, gm: 0.18, om: 0.072, nm: 0.067,
+    hist: { pe: 90, ps: 8.0, ev: 50, pb: 14 }, sect: { pe: 8, ps: 0.6, ev: 6, pb: 0.9 },
+    g: { rev5: 0.3, eps5: 0.15, fwd: 0.12 },
+    beta: 2.2, vol: 0.55, divY: 0, payout: 0, buyback: 0, shortInt: 0.031,
+    moatScore: 5,
+    moat: "Marke, Ladenetz und Software-Integration sind echte Vorteile, der Kostenvorsprung in der Fertigung schmilzt aber. Ein großer Teil der Bewertung hängt an Robotaxi- und Robotik-Projekten, die heute keinen Gewinn liefern.",
+    mgmt: "Keine Ausschüttung, hohe Investitionen, starke Abhängigkeit von einer Führungsfigur. Aktienbasierte Vergütung verwässert Altaktionäre.",
+    risks: ["Preiskampf drückt die Fahrzeugmarge", "Regulatorische Freigabe für autonomes Fahren offen", "Schlüsselpersonenrisiko", "Wegfall von E-Auto-Subventionen"],
+    concentration: ["Model 3/Y ≈ 90 % der Auslieferungen", "Regulatorische Emissionsgutschriften stützen den Gewinn"],
+    flags: ["Der Großteil des Bewertungsaufschlags beruht auf Geschäftsfeldern ohne heutigen Umsatzbeitrag – Modellwerte sind entsprechend unsicher."],
+  },
+  {
+    t: "KO", name: "The Coca-Cola Company", sector: "Basiskonsum", peers: ["JNJ", "PFE", "MCD"],
+    cur: "$", profile: "standard", price: 63.0, shares: 4310,
+    eps: 2.4, epsFwd: 2.9, bvps: 6.5, sps: 10.8, dps: 1.94,
+    fcf: 9500, ebitda: 14000, ebit: 12500, revenue: 46500, netIncome: 10500,
+    netDebt: 32000, ta: 100000, tl: 72000, equity: 28000, re: 75000, wc: 2000,
+    roic: 0.14, roe: 0.38, gm: 0.6, om: 0.27, nm: 0.22,
+    hist: { pe: 25, ps: 5.8, ev: 21, pb: 11 }, sect: { pe: 20, ps: 2.2, ev: 14, pb: 5 },
+    g: { rev5: 0.05, eps5: 0.06, fwd: 0.05 },
+    beta: 0.6, vol: 0.16, divY: 0.031, payout: 0.7, buyback: 0.003, shortInt: 0.009,
+    moatScore: 9,
+    moat: "Marke und Abfüller-Netzwerk mit weltweiter Distribution. Preissetzungsmacht auch in inflationären Phasen, dafür strukturell niedriges Mengenwachstum.",
+    mgmt: "Sehr verlässliche Dividendenpolitik über Jahrzehnte, Ausschüttungsquote allerdings hoch. Wachstum kommt zunehmend aus Preis statt Menge.",
+    risks: ["Gesundheitsregulierung und Zuckersteuern", "Währungseffekte durch Schwellenländer", "Strukturell schwaches Volumenwachstum"],
+    concentration: ["Abhängigkeit vom Abfüllsystem", "Nordamerika und Lateinamerika als Gewinnschwerpunkte"],
+    flags: [],
+  },
+  {
+    t: "JNJ", name: "Johnson & Johnson", sector: "Gesundheit · Pharma", peers: ["PFE", "KO", "MSFT"],
+    cur: "$", profile: "standard", price: 155.0, shares: 2400,
+    eps: 8.0, epsFwd: 10.0, bvps: 30.0, sps: 36.7, dps: 4.96,
+    fcf: 18000, ebitda: 30000, ebit: 25000, revenue: 88000, netIncome: 19000,
+    netDebt: 15000, ta: 175000, tl: 100000, equity: 75000, re: 120000, wc: 15000,
+    roic: 0.15, roe: 0.25, gm: 0.69, om: 0.28, nm: 0.21,
+    hist: { pe: 16, ps: 4.2, ev: 12, pb: 5.5 }, sect: { pe: 17, ps: 3.5, ev: 11, pb: 4.5 },
+    g: { rev5: 0.03, eps5: 0.05, fwd: 0.04 },
+    beta: 0.55, vol: 0.15, divY: 0.032, payout: 0.5, buyback: 0.01, shortInt: 0.011,
+    moatScore: 7,
+    moat: "Patentgeschützte Medikamente plus ein breites Medizintechnik-Geschäft. Der Burggraben ist real, aber zeitlich begrenzt: Patente laufen aus, die Pipeline muss ihn immer wieder neu aufbauen.",
+    mgmt: "Über 60 Jahre steigende Dividende, konservative Bilanz, regelmäßige Zukäufe in der Medizintechnik.",
+    risks: ["Prozessrisiken (Talkum, Opioide) mit schwer bezifferbarer Höhe", "Patentablauf bei Schlüsselmedikamenten", "US-Preisregulierung für Arzneimittel"],
+    concentration: ["Wenige Blockbuster tragen die Pharma-Marge", "USA als wichtigster Preismarkt"],
+    flags: [],
+  },
+  {
+    t: "PFE", name: "Pfizer Inc.", sector: "Gesundheit · Pharma", peers: ["JNJ", "KO"],
+    cur: "$", profile: "standard", price: 28.0, shares: 5670,
+    eps: 1.4, epsFwd: 2.3, bvps: 15.5, sps: 10.6, dps: 1.68,
+    fcf: 8000, ebitda: 18000, ebit: 12000, revenue: 60000, netIncome: 8000,
+    netDebt: 55000, ta: 215000, tl: 125000, equity: 90000, re: 100000, wc: 5000,
+    roic: 0.06, roe: 0.09, gm: 0.6, om: 0.2, nm: 0.13,
+    hist: { pe: 12, ps: 3.5, ev: 9, pb: 2.6 }, sect: { pe: 17, ps: 3.5, ev: 11, pb: 4.5 },
+    g: { rev5: -0.03, eps5: -0.1, fwd: 0.04 },
+    beta: 0.6, vol: 0.25, divY: 0.06, payout: 0.9, buyback: 0, shortInt: 0.025,
+    moatScore: 5,
+    moat: "Forschungsstärke und Vertriebsnetz, aber ein schmaler Burggraben: Nach dem Wegfall der Corona-Umsätze muss die Pipeline eine sichtbare Lücke schließen.",
+    mgmt: "Hohe Ausschüttungsquote bei sinkendem Gewinn, große schuldenfinanzierte Übernahme in der Onkologie. Die Dividende ist das zentrale Argument – und zugleich der Punkt, an dem es eng werden kann.",
+    risks: ["Patentklippe bis Ende des Jahrzehnts", "Ausschüttungsquote nahe am Gewinn", "Erfolg der Zukäufe noch unbewiesen", "US-Preisverhandlungen für Medikamente"],
+    concentration: ["Wenige Wirkstoffe tragen den Umsatz", "USA als dominierender Markt"],
+    flags: ["Gewinn stark schwankend – Multiplikatoren auf Basis des laufenden Jahres sind wenig aussagekräftig."],
+  },
+  {
+    t: "SAP", name: "SAP SE", sector: "Technologie · Software", peers: ["MSFT", "ASML", "ALV.DE"],
+    cur: "€", profile: "standard", price: 205.0, shares: 1170,
+    eps: 3.3, epsFwd: 5.2, bvps: 32.0, sps: 29.9, dps: 2.3,
+    fcf: 6000, ebitda: 8500, ebit: 6800, revenue: 35000, netIncome: 3900,
+    netDebt: 2000, ta: 75000, tl: 33000, equity: 42000, re: 25000, wc: 5000,
+    roic: 0.1, roe: 0.095, gm: 0.73, om: 0.19, nm: 0.11,
+    hist: { pe: 28, ps: 5.2, ev: 20, pb: 4.2 }, sect: { pe: 30, ps: 9, ev: 21, pb: 10 },
+    g: { rev5: 0.06, eps5: 0.12, fwd: 0.13 },
+    beta: 1.0, vol: 0.25, divY: 0.011, payout: 0.45, buyback: 0.007, shortInt: 0.006,
+    moatScore: 8,
+    moat: "Extrem hohe Wechselkosten: Ein ERP-System auszutauschen kostet Jahre. Die Umstellung auf Cloud-Abonnements erhöht die Planbarkeit der Umsätze.",
+    mgmt: "Klarer Fokus auf Cloud-Umstellung, Restrukturierung mit Stellenabbau, stetig steigende Dividende. Aktienbasierte Vergütung ist relevant und sollte bei der Gewinnbetrachtung mitgedacht werden.",
+    risks: ["Cloud-Umstellung drückt Margen in der Übergangsphase", "Wettbewerb durch Microsoft und Salesforce", "Hoher Anteil aktienbasierter Vergütung"],
+    concentration: ["Europa als Kernmarkt", "Großkunden mit langen Vertragszyklen"],
+    flags: [],
+  },
+  {
+    t: "ASML", name: "ASML Holding N.V.", sector: "Technologie · Halbleiter", peers: ["NVDA", "SAP", "MSFT"],
+    cur: "€", profile: "cyclical", price: 700.0, shares: 394,
+    eps: 19.5, epsFwd: 24.0, bvps: 34.0, sps: 71.0, dps: 6.1,
+    fcf: 6500, ebitda: 10500, ebit: 9500, revenue: 28000, netIncome: 7700,
+    netDebt: -3000, ta: 45000, tl: 32000, equity: 13000, re: 10000, wc: 8000,
+    roic: 0.35, roe: 0.55, gm: 0.51, om: 0.33, nm: 0.27,
+    hist: { pe: 38, ps: 10, ev: 28, pb: 20 }, sect: { pe: 30, ps: 8, ev: 22, pb: 8 },
+    g: { rev5: 0.2, eps5: 0.25, fwd: 0.15 },
+    beta: 1.4, vol: 0.35, divY: 0.009, payout: 0.3, buyback: 0.015, shortInt: 0.008,
+    moatScore: 10,
+    moat: "Monopol bei EUV-Lithografie. Ohne diese Maschinen lassen sich moderne Chips nicht fertigen; der Vorsprung beruht auf Jahrzehnten Forschung und einem eingespielten Zulieferernetz.",
+    mgmt: "Verlässliche Ausschüttungspolitik aus dem Zyklus heraus, Rückkäufe in Schwächephasen, sehr hohe Forschungsquote.",
+    risks: ["Ausgeprägte Zyklizität der Chip-Investitionen", "Exportkontrollen für den China-Absatz", "Auftragseingang schwankt stark von Quartal zu Quartal"],
+    concentration: ["Drei Kunden (TSMC, Samsung, Intel) dominieren den Auftragsbestand", "China-Anteil politisch gesteuert"],
+    flags: [],
+  },
+  {
+    t: "ALV.DE", name: "Allianz SE", sector: "Finanzen · Versicherung", peers: ["SAP", "VOW3.DE"],
+    cur: "€", profile: "financial", price: 290.0, shares: 395,
+    eps: 22.5, epsFwd: 25.0, bvps: 160.0, sps: 405.0, dps: 13.8,
+    fcf: null, ebitda: null, ebit: 15000, revenue: 160000, netIncome: 9000,
+    netDebt: null, ta: 1050000, tl: 985000, equity: 65000, re: 30000, wc: null,
+    roic: null, roe: 0.15, gm: null, om: 0.09, nm: 0.056,
+    hist: { pe: 11, ps: null, ev: null, pb: 1.5 }, sect: { pe: 10.5, ps: null, ev: null, pb: 1.4 },
+    g: { rev5: 0.05, eps5: 0.08, fwd: 0.06 },
+    beta: 0.9, vol: 0.18, divY: 0.048, payout: 0.6, buyback: 0.015, shortInt: 0.005,
+    moatScore: 7,
+    moat: "Größenvorteile in Vertrieb und Rückversicherung, starke Marke und ein Vermögensverwaltungsgeschäft (PIMCO), das stabile Gebühren liefert.",
+    mgmt: "Klare Ausschüttungspolitik mit Mindestdividende und laufenden Rückkaufprogrammen. Kapitalquote deutlich über den regulatorischen Anforderungen.",
+    risks: ["Kapitalanlageergebnis hängt am Zinsniveau", "Großschäden und Naturkatastrophen", "Regulatorische Kapitalanforderungen"],
+    concentration: ["Europäisches Schaden- und Unfallgeschäft", "Zinssensitive Kapitalanlagen"],
+    flags: [
+      "Für Versicherer sind freier Cashflow und EV/EBITDA nicht sinnvoll definiert – DCF und EV-Multiplikatoren sind deshalb deaktiviert.",
+      "Bewertung stützt sich auf KGV, Kurs-Buchwert und Dividendenmodell.",
+    ],
+  },
+  {
+    t: "VOW3.DE", name: "Volkswagen AG (Vz.)", sector: "Automobil", peers: ["TSLA", "ALV.DE", "SAP"],
+    cur: "€", profile: "cyclical", price: 95.0, shares: 501,
+    eps: 22.0, epsFwd: 20.0, bvps: 380.0, sps: 643.0, dps: 9.0,
+    fcf: 4000, ebitda: 40000, ebit: 18000, revenue: 322000, netIncome: 11000,
+    netDebt: 150000, ta: 640000, tl: 460000, equity: 180000, re: 120000, wc: 40000,
+    roic: 0.05, roe: 0.07, gm: 0.18, om: 0.056, nm: 0.034,
+    hist: { pe: 5.5, ps: 0.2, ev: 5.5, pb: 0.4 }, sect: { pe: 7, ps: 0.35, ev: 5, pb: 0.6 },
+    g: { rev5: 0.05, eps5: -0.05, fwd: 0.02 },
+    beta: 1.3, vol: 0.3, divY: 0.095, payout: 0.4, buyback: 0, shortInt: 0.021,
+    moatScore: 4,
+    moat: "Skalenvorteile und Markenportfolio, aber schmaler Burggraben: hohe Fixkosten, wenig Preissetzungsmacht im Volumensegment und ein technologischer Rückstand bei Software.",
+    mgmt: "Hohe Dividendenrendite bei schwachem Gewinntrend. Restrukturierung mit Werksschließungen läuft; die Umsetzung ist der eigentliche Prüfstein.",
+    risks: ["Strukturelle Überkapazitäten in Europa", "China-Geschäft verliert Marktanteile", "Hohe Umbaukosten", "Zölle und Handelskonflikte"],
+    concentration: ["China historisch rund ein Drittel der Auslieferungen", "Europäische Werke mit hohen Fixkosten"],
+    flags: [
+      "Die Nettoverschuldung enthält die Finanzdienstleistungssparte – EV-basierte Multiplikatoren sind dadurch verzerrt und werden nur mit halbem Gewicht berücksichtigt.",
+      "Zyklischer Wert: Ein niedriges KGV am Gewinnhoch ist ein klassisches Warnsignal, kein Kaufargument.",
+    ],
+  },
+];
+
+const BY_TICKER = Object.fromEntries(COMPANIES.map((c) => [c.t, c]));
+
+/* Adapter: hier würde im Live-Betrieb der API-Aufruf stehen (siehe Reiter "Daten") */
+function loadCompany(ticker) {
+  const c = BY_TICKER[ticker];
+  if (!c) return { ok: false, error: `Kein Datensatz für ${ticker}.` };
+  return { ok: true, data: c, source: "Demo-Snapshot", delayed: true };
+}
+
+/* ============================================================================
+   2. RECHENSCHICHT — reine Funktionen, keine UI, keine Seiteneffekte
+   ========================================================================== */
+
+const ERP = 0.045;                       // Marktrisikoprämie
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const isNum = (v) => typeof v === "number" && isFinite(v);
+
+const de = (v, d = 2) =>
+  isNum(v) ? v.toLocaleString("de-DE", { minimumFractionDigits: d, maximumFractionDigits: d }) : "–";
+const pct = (v, d = 1) => (isNum(v) ? `${v >= 0 ? "+" : ""}${de(v * 100, d)} %` : "–");
+const pctAbs = (v, d = 1) => (isNum(v) ? `${de(v * 100, d)} %` : "–");
+const money = (v, cur, d = 2) => (isNum(v) ? `${cur}${de(v, d)}` : "–");
+const big = (v, cur) => {
+  if (!isNum(v)) return "–";
+  const a = Math.abs(v);
+  if (a >= 1e6) return `${cur}${de(v / 1e6, 2)} Bio.`;
+  if (a >= 1e3) return `${cur}${de(v / 1e3, 1)} Mrd.`;
+  return `${cur}${de(v, 0)} Mio.`;
+};
+
+/* --- deterministische Demo-Kurshistorie (kein echter Verlauf) ------------- */
+function mulberry(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function priceSeries(c, months = 60) {
+  const seed = [...c.t].reduce((s, ch) => s * 31 + ch.charCodeAt(0), 7);
+  const rnd = mulberry(seed);
+  const mv = c.vol / Math.sqrt(12);
+  const drift = Math.log(1 + clamp(c.g.eps5, -0.2, 0.45)) / 12;
+  let p = 1, raw = [];
+  for (let i = 0; i < months; i++) {
+    const z = (rnd() + rnd() + rnd() + rnd() - 2) * 1.2;
+    p *= Math.exp(drift + mv * z - (mv * mv) / 2);
+    raw.push(p);
+  }
+  const scale = c.price / raw[raw.length - 1];
+  const now = new Date();
+  return raw.map((v, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (months - 1 - i), 1);
+    return {
+      label: `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getFullYear()).slice(2)}`,
+      kurs: +(v * scale).toFixed(2),
+    };
+  });
+}
+const momentum = (series, m) => {
+  const n = series.length;
+  if (n <= m) return 0;
+  return series[n - 1].kurs / series[n - 1 - m].kurs - 1;
+};
+
+/* --- Optionspreise (Black-Scholes, damit Prämien zur Vola passen) --------- */
+function ncdf(x) {
+  const a = [0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429], p = 0.3275911;
+  const s = x < 0 ? -1 : 1; const z = Math.abs(x) / Math.SQRT2;
+  const t = 1 / (1 + p * z);
+  const y = 1 - ((((a[4] * t + a[3]) * t + a[2]) * t + a[1]) * t + a[0]) * t * Math.exp(-z * z);
+  return 0.5 * (1 + s * y);
+}
+function bs(S, K, T, r, sig, type) {
+  if (T <= 0 || sig <= 0) return Math.max(0, type === "call" ? S - K : K - S);
+  const d1 = (Math.log(S / K) + (r + (sig * sig) / 2) * T) / (sig * Math.sqrt(T));
+  const d2 = d1 - sig * Math.sqrt(T);
+  return type === "call"
+    ? S * ncdf(d1) - K * Math.exp(-r * T) * ncdf(d2)
+    : K * Math.exp(-r * T) * ncdf(-d2) - S * ncdf(-d1);
+}
+function optionChain(c, rf) {
+  const rough = c.price * 0.05;
+  const steps = [0.5, 1, 2.5, 5, 10, 25, 50, 100];
+  const step = steps.reduce((b, s) => (Math.abs(s - rough) < Math.abs(b - rough) ? s : b), steps[0]);
+  const atm = Math.round(c.price / step) * step;
+  const rnd = mulberry([...c.t].reduce((s, ch) => s * 17 + ch.charCodeAt(0), 3));
+  return [30, 90].map((days) => {
+    const T = days / 365;
+    const rows = [-3, -2, -1, 0, 1, 2, 3].map((k) => {
+      const K = atm + k * step;
+      const skew = clamp((c.price / K - 1) * 0.55, -0.12, 0.18);
+      const iv = clamp(c.vol * (days === 30 ? 1.08 : 1.0) + skew, 0.08, 1.6);
+      const near = Math.exp(-Math.abs(k) / 2.2);
+      const oi = Math.round((3000 + rnd() * 9000) * near);
+      return {
+        strike: K, iv,
+        call: bs(c.price, K, T, rf, iv, "call"),
+        put: bs(c.price, K, T, rf, iv, "put"),
+        oiCall: oi, oiPut: Math.round(oi * (0.7 + rnd() * 0.8)),
+      };
+    });
+    return { days, rows };
+  });
+}
+
+/* --- Standard-Annahmen --------------------------------------------------- */
+function defaultAssumptions(c) {
+  const rf = c.cur === "€" ? 0.026 : 0.04;
+  return {
+    rf,
+    wacc: round4(clamp(rf + c.beta * ERP + (c.profile === "cyclical" ? 0.01 : 0), 0.05, 0.16)),
+    waccManual: false,
+    g1: round4(clamp(c.g.fwd, -0.05, 0.3)),
+    gT: 0.02,
+    years: 10,
+    term: "gordon",
+    exitMult: c.hist.ev ? round4(c.hist.ev * 0.8) : 10,
+    aaa: round4(rf + 0.012),
+  };
+}
+const round4 = (v) => Math.round(v * 10000) / 10000;
+const suggestedWacc = (c, rf) =>
+  round4(clamp(rf + c.beta * ERP + (c.profile === "cyclical" ? 0.01 : 0), 0.03, 0.2));
+
+/* --- Modell 1: DCF ------------------------------------------------------- */
+function dcf(c, a) {
+  if (!isNum(c.fcf) || !isNum(c.netDebt))
+    return { ok: false, why: "Freier Cashflow bzw. Nettoverschuldung nicht sinnvoll definiert." };
+  if (a.wacc <= a.gT + 0.005)
+    return { ok: false, why: "Diskontsatz muss über der ewigen Wachstumsrate liegen." };
+  const N = a.years;
+  const flat = Math.round(N / 2);            // Phase 1: Wachstum bleibt konstant
+  let fcf = c.fcf, pv = 0;
+  const rows = [];
+  for (let i = 1; i <= N; i++) {
+    const g = i <= flat
+      ? a.g1
+      : a.g1 + ((a.gT - a.g1) * (i - flat)) / Math.max(1, N - flat);
+    fcf *= 1 + g;
+    const disc = fcf / Math.pow(1 + a.wacc, i);
+    pv += disc;
+    rows.push({ jahr: i, g, fcf, bar: disc });
+  }
+  let tv;
+  if (a.term === "exit" && isNum(c.ebitda)) {
+    const eb = c.ebitda * Math.pow(1 + (a.g1 + a.gT) / 2, N);
+    tv = eb * a.exitMult;
+  } else {
+    tv = (fcf * (1 + a.gT)) / (a.wacc - a.gT);
+  }
+  const pvTv = tv / Math.pow(1 + a.wacc, N);
+  const ev = pv + pvTv;
+  const value = (ev - c.netDebt) / c.shares;
+  return { ok: true, value, ev, pv, pvTv, tvShare: pvTv / ev, rows };
+}
+
+/* --- Modell 2: Multiplikatoren (KGV, KUV, EV/EBITDA, KBV) ---------------- */
+function blendMult(hist, sect, f) {
+  const parts = [hist, sect].filter(isNum);
+  if (!parts.length) return null;
+  return (parts.reduce((s, v) => s + v, 0) / parts.length) * f;
+}
+function multiples(c, f = 1) {
+  const out = {};
+  const epsBase = isNum(c.epsFwd) ? (c.eps + c.epsFwd) / 2 : c.eps;
+
+  const fpe = blendMult(c.hist.pe, c.sect.pe, f);
+  out.pe = fpe && epsBase > 0
+    ? { ok: true, value: fpe * epsBase, mult: fpe, base: epsBase, unit: "Gewinn je Aktie (Mittel aus laufendem und erwartetem Jahr)" }
+    : { ok: false, why: "Kein positiver Gewinn je Aktie." };
+
+  const fps = blendMult(c.hist.ps, c.sect.ps, f);
+  out.ps = fps
+    ? { ok: true, value: fps * c.sps, mult: fps, base: c.sps, unit: "Umsatz je Aktie" }
+    : { ok: false, why: "Keine belastbaren Umsatzmultiplikatoren." };
+
+  const fev = blendMult(c.hist.ev, c.sect.ev, f);
+  out.ev = fev && isNum(c.ebitda) && isNum(c.netDebt)
+    ? { ok: true, value: (fev * c.ebitda - c.netDebt) / c.shares, mult: fev, base: c.ebitda, unit: "EBITDA (Unternehmenswert abzüglich Nettoschulden)" }
+    : { ok: false, why: "EBITDA oder Nettoverschuldung nicht aussagekräftig." };
+
+  const fpb = blendMult(c.hist.pb, c.sect.pb, f);
+  out.pb = fpb && c.bvps > 0
+    ? { ok: true, value: fpb * c.bvps, mult: fpb, base: c.bvps, unit: "Buchwert je Aktie" }
+    : { ok: false, why: "Kein belastbarer Buchwert." };
+  return out;
+}
+
+/* --- Modell 3: Dividendendiskontierung ----------------------------------- */
+function ddm(c, a, dg = 0) {
+  if (!c.dps) return { ok: false, why: "Keine Dividende – Modell nicht anwendbar." };
+  if (c.divY < 0.02 || c.payout < 0.3)
+    return { ok: false, why: "Dividendenstarken Werten vorbehalten (Rendite ab 2 %, Ausschüttung ab 30 %)." };
+  const r = clamp(Math.max(a.rf + c.beta * ERP, 0.075), 0.05, 0.2);
+  const sustain = isNum(c.roe) && isNum(c.payout) ? c.roe * (1 - c.payout) : c.g.fwd;
+  const g = clamp(Math.min(sustain, Math.max(c.g.fwd, 0)) + dg, -0.02, r - 0.02);
+  const gT = clamp(Math.min(a.gT, r - 0.03), 0, 0.03);
+  let d = c.dps, pv = 0;
+  for (let i = 1; i <= 5; i++) { d *= 1 + g; pv += d / Math.pow(1 + r, i); }
+  const tv = (d * (1 + gT)) / (r - gT);
+  return { ok: true, value: pv + tv / Math.pow(1 + r, 5), r, g, gT };
+}
+
+/* --- Modell 4: Graham (Gegenprobe) --------------------------------------- */
+function graham(c, a) {
+  if (c.g.eps5 < 0)
+    return { ok: false, why: "Setzt stabile Gewinne voraus – der Gewinn je Aktie ist zuletzt gefallen." };
+  const vals = [];
+  if (c.eps > 0 && c.bvps > 0) vals.push(Math.sqrt(22.5 * c.eps * c.bvps));
+  if (c.eps > 0) {
+    const g = clamp(c.g.fwd * 100, -5, 15);
+    vals.push((c.eps * (8.5 + 2 * g) * 4.4) / (a.aaa * 100));
+  }
+  if (!vals.length) return { ok: false, why: "Negativer Gewinn oder Buchwert." };
+  return { ok: true, value: vals.reduce((s, v) => s + v, 0) / vals.length, variants: vals };
+}
+
+/* --- Gewichtung & Gesamtbild --------------------------------------------- */
+const MODEL_META = {
+  dcf: { label: "DCF (Cashflow-Barwert)", w: 0.36 },
+  pe: { label: "KGV-Vergleich", w: 0.22 },
+  ev: { label: "EV/EBITDA-Vergleich", w: 0.15 },
+  ps: { label: "KUV-Vergleich", w: 0.07 },
+  pb: { label: "Kurs-Buchwert", w: 0.05 },
+  ddm: { label: "Dividendenmodell (zweistufig)", w: 0.1 },
+  graham: { label: "Graham-Formel (Gegenprobe)", w: 0.05 },
+};
+function weightsFor(c) {
+  const w = Object.fromEntries(Object.entries(MODEL_META).map(([k, v]) => [k, v.w]));
+  if (c.profile === "financial") { w.dcf = 0; w.ev = 0; w.ps = 0; w.pb = 0.32; w.pe = 0.35; w.ddm = 0.33; w.graham = 0; }
+  if (c.profile === "cyclical") { w.pe = 0.14; w.ev = 0.2; w.pb = 0.1; w.dcf = 0.3; w.ps = 0.08; w.ddm = 0.1; w.graham = 0.08; }
+  if (c.t === "VOW3.DE") w.ev *= 0.5;                       // Captive-Finance verzerrt EV
+  if (c.t === "TSLA") { w.pe *= 0.6; w.ps *= 1.4; }         // Gewinn noch klein relativ zur Story
+  return w;
+}
+function runModels(c, a, scen = "base") {
+  const s = {
+    base: { dg: 0, dw: 0, dgr: 0, f: 1 },
+    bull: { dg: 0.03, dw: -0.01, dgr: 0.003, f: 1.2 },
+    bear: { dg: -0.03, dw: 0.015, dgr: -0.003, f: 0.8 },
+  }[scen];
+  const aa = {
+    ...a,
+    g1: clamp(a.g1 + s.dg, -0.15, 0.4),
+    gT: clamp(a.gT + s.dgr, 0, 0.035),
+    wacc: clamp(a.wacc + s.dw, 0.035, 0.25),
+    exitMult: a.exitMult * s.f,
+  };
+  const m = multiples(c, s.f);
+  const res = {
+    dcf: dcf(c, aa),
+    pe: m.pe, ev: m.ev, ps: m.ps, pb: m.pb,
+    ddm: ddm(c, aa, s.dg / 3),
+    graham: graham(c, aa),
+  };
+  const w0 = weightsFor(c);
+  let sum = 0, wsum = 0;
+  const used = [];
+  for (const k of Object.keys(MODEL_META)) {
+    const r = res[k];
+    if (r && r.ok && isNum(r.value) && r.value > 0 && w0[k] > 0) {
+      sum += r.value * w0[k]; wsum += w0[k];
+      used.push({ key: k, ...r, weight: w0[k] });
+    }
+  }
+  const fair = wsum > 0 ? sum / wsum : null;
+  used.forEach((u) => (u.weightNorm = u.weight / wsum));
+  const vals = used.map((u) => u.value);
+  const mean = vals.reduce((s2, v) => s2 + v, 0) / (vals.length || 1);
+  const sd = Math.sqrt(vals.reduce((s2, v) => s2 + (v - mean) ** 2, 0) / (vals.length || 1));
+  return { fair, used, all: res, sd, spread: mean ? sd / mean : null, assumptions: aa };
+}
+function valuation(c, a) {
+  const base = runModels(c, a, "base");
+  const bull = runModels(c, a, "bull");
+  const bear = runModels(c, a, "bear");
+  const upside = base.fair ? base.fair / c.price - 1 : null;
+  return { base, bull, bear, upside };
+}
+
+/* --- Sensitivität: DCF über WACC × ewiges Wachstum ------------------------ */
+function sensitivity(c, a) {
+  const waccs = [-0.015, -0.0075, 0, 0.0075, 0.015].map((d) => round4(a.wacc + d));
+  const gs = [-0.01, -0.005, 0, 0.005, 0.01].map((d) => round4(a.gT + d));
+  const cells = waccs.map((w) =>
+    gs.map((g) => {
+      const r = dcf(c, { ...a, wacc: w, gT: g });
+      return r.ok ? r.value : null;
+    })
+  );
+  return { waccs, gs, cells };
+}
+
+/* --- Altman Z-Score ------------------------------------------------------ */
+function altman(c) {
+  if (c.profile === "financial")
+    return { ok: false, why: "Für Banken und Versicherer nicht aussagekräftig." };
+  if (![c.ta, c.tl, c.wc, c.re, c.ebit, c.revenue].every(isNum))
+    return { ok: false, why: "Bilanzdaten unvollständig." };
+  const mcap = c.price * c.shares;
+  const z = 1.2 * (c.wc / c.ta) + 1.4 * (c.re / c.ta) + 3.3 * (c.ebit / c.ta)
+    + 0.6 * (mcap / c.tl) + 1.0 * (c.revenue / c.ta);
+  const zone = z > 2.99 ? "sicher" : z > 1.81 ? "Grauzone" : "kritisch";
+  return { ok: true, z, zone };
+}
+
+/* --- Qualitäts- und Risikoprofil ----------------------------------------- */
+function quality(c) {
+  const netDebtEbitda = isNum(c.netDebt) && isNum(c.ebitda) && c.ebitda > 0 ? c.netDebt / c.ebitda : null;
+  const parts = [
+    { k: "Kapitalrendite", v: clamp(((isNum(c.roic) ? c.roic : c.roe) / 0.25) * 100, 0, 100), w: 1.2 },
+    { k: "Marge", v: clamp((c.om / 0.3) * 100, 0, 100), w: 1 },
+    { k: "Wachstum", v: clamp(((c.g.fwd + 0.02) / 0.17) * 100, 0, 100), w: 1 },
+    {
+      k: "Bilanz", w: 1.1,
+      v: netDebtEbitda === null ? clamp((c.equity / c.ta) * 400, 0, 100)
+        : clamp(100 - Math.max(0, netDebtEbitda) * 25, 0, 100),
+    },
+    { k: "Kapitalallokation", v: clamp(((c.buyback + c.divY) / 0.05) * 70 + (c.payout > 0.85 ? -20 : 10), 0, 100), w: 0.8 },
+    { k: "Burggraben", v: c.moatScore * 10, w: 1.5 },
+  ];
+  const wsum = parts.reduce((s, p) => s + p.w, 0);
+  const score = parts.reduce((s, p) => s + p.v * p.w, 0) / wsum;
+  return { score, parts, netDebtEbitda };
+}
+function riskProfile(c, z, mom6) {
+  const nd = isNum(c.netDebt) && isNum(c.ebitda) && c.ebitda > 0 ? c.netDebt / c.ebitda : null;
+  const parts = [
+    { k: "Kursschwankung", v: clamp((c.vol / 0.6) * 100, 0, 100), note: `Jahresvolatilität ${pctAbs(c.vol, 0)}` },
+    { k: "Marktsensitivität", v: clamp((c.beta / 2.2) * 100, 0, 100), note: `Beta ${de(c.beta, 2)}` },
+    { k: "Verschuldung", v: nd === null ? 45 : clamp(nd * 22 + 10, 0, 100), note: nd === null ? "branchenbedingt nicht vergleichbar" : `Nettoschulden / EBITDA ${de(nd, 1)}x` },
+    { k: "Bilanzstabilität", v: z.ok ? clamp(100 - (z.z / 6) * 100, 0, 100) : 50, note: z.ok ? `Altman Z ${de(z.z, 2)} (${z.zone})` : "nicht anwendbar" },
+    { k: "Klumpenrisiko", v: clamp(c.concentration.length * 22 + (c.moatScore < 6 ? 20 : 0), 0, 100), note: `${c.concentration.length} wesentliche Abhängigkeiten` },
+    { k: "Gewinntrend", v: clamp(50 - c.g.eps5 * 120, 0, 100), note: `Gewinn je Aktie 5 Jahre ${pct(c.g.eps5, 0)} p. a.` },
+  ];
+  const score = parts.reduce((s, p) => s + p.v, 0) / parts.length;
+  return { score, parts };
+}
+
+/* --- Einordnung, Text, Gegenargumente ------------------------------------ */
+function verdictOf(upside, q, r) {
+  if (upside === null) return { label: "nicht bewertbar", tone: "fair", short: "Datenlage reicht nicht." };
+  if (upside > 0.25 && q < 50) return { label: "optisch günstig, mit Qualitätsvorbehalt", tone: "fair", short: "Abschlag könnte begründet sein." };
+  if (upside > 0.25) return { label: "attraktiv bewertet", tone: "cheap", short: "Deutlicher Abstand zum Modellwert." };
+  if (upside > 0.1) return { label: "leicht unterbewertet", tone: "cheap", short: "Moderater Abschlag." };
+  if (upside > -0.1) return { label: "fair bewertet", tone: "fair", short: "Kurs nahe am Modellwert." };
+  if (upside > -0.25) return { label: "leicht überbewertet", tone: "rich", short: "Aufschlag zum Modellwert." };
+  return { label: "deutlich überbewertet", tone: "rich", short: "Hohe Erwartungen sind eingepreist." };
+}
+function horizonView(c, upside, q, r, mom6) {
+  const kurz = mom6 < -0.1 && upside > 0.1
+    ? "Kurzfristig belastet der schwache Kurstrend; ein Abschlag allein dreht ihn nicht."
+    : mom6 > 0.2 && upside < -0.1
+      ? "Kurzfristig trägt das Momentum, die Bewertung liefert dafür aber keinen Rückhalt mehr."
+      : "Kurzfristig dominieren Nachrichtenlage und Zinsen, nicht der Modellwert.";
+  const lang = q > 65 && upside > 0
+    ? "Langfristig spricht die Kombination aus Geschäftsqualität und Abschlag für den Wert."
+    : q > 65
+      ? "Langfristig ist die Geschäftsqualität das Argument – bezahlt wird sie aktuell auch."
+      : "Langfristig fehlt der Qualitätspuffer, der einen Bewertungsirrtum ausgleichen würde.";
+  return { kurz, lang };
+}
+function narrative(c, v, q, r, z, mom6, a) {
+  const up = v.upside;
+  const s = [];
+  const dir = up > 0.1 ? "unter" : up < -0.1 ? "über" : "nahe";
+  s.push(
+    `Der gewichtete Modellwert liegt bei ${money(v.base.fair, c.cur)} je Aktie, der Kurs bei ${money(c.price, c.cur)}. Damit notiert ${c.name} ${dir} dem, was die Modelle unter den eingestellten Annahmen rechtfertigen (${pct(up)}).`
+  );
+  const peNow = c.eps > 0 ? c.price / c.eps : null;
+  if (peNow && isNum(c.hist.pe)) {
+    const rel = peNow / c.hist.pe - 1;
+    s.push(
+      `Das KGV von ${de(peNow, 1)} liegt ${Math.abs(rel) < 0.07 ? "etwa auf" : rel > 0 ? `${pctAbs(rel, 0)} über` : `${pctAbs(-rel, 0)} unter`} dem eigenen Fünfjahres-Median von ${de(c.hist.pe, 1)}${isNum(c.sect.pe) ? `, der Sektor kommt auf rund ${de(c.sect.pe, 1)}` : ""}.`
+    );
+  }
+  s.push(
+    q.score > 65
+      ? `Getragen wird die Bewertung von der Geschäftsqualität: ${pctAbs(isNum(c.roic) ? c.roic : c.roe, 0)} Kapitalrendite, ${pctAbs(c.om, 0)} operative Marge und ein Burggraben, der ${c.moatScore >= 8 ? "breit" : "belastbar"} ist.`
+      : `Die Geschäftsqualität stützt nur begrenzt: ${pctAbs(c.om, 0)} operative Marge, Kapitalrendite von ${pctAbs(isNum(c.roic) ? c.roic : c.roe, 0)} und ein eher schmaler Burggraben.`
+  );
+  if (q.netDebtEbitda !== null) {
+    s.push(
+      q.netDebtEbitda < 1
+        ? `Die Bilanz ist entspannt (Nettoschulden ${de(q.netDebtEbitda, 1)}x EBITDA) und gibt Spielraum für Rückschläge.`
+        : `Die Verschuldung von ${de(q.netDebtEbitda, 1)}x EBITDA${z.ok ? ` bei einem Altman-Z-Score von ${de(z.z, 2)} (${z.zone})` : ""} begrenzt den Spielraum in schwachen Jahren.`
+    );
+  }
+  s.push(
+    `Ein wesentlicher Teil des DCF-Werts steckt im Endwert nach Jahr ${a.years} – das Ergebnis reagiert daher empfindlich auf Diskontsatz (${pctAbs(a.wacc)}) und ewiges Wachstum (${pctAbs(a.gT)}).`
+  );
+  return s.join(" ");
+}
+function counterpoints(c, v, q, r, z) {
+  const out = [];
+  const dcfr = v.base.all.dcf;
+  if (dcfr.ok && dcfr.tvShare > 0.7)
+    out.push(`${pctAbs(dcfr.tvShare, 0)} des DCF-Werts stammen aus dem Endwert – also aus Annahmen für die Zeit nach dem Prognosezeitraum.`);
+  if (v.base.spread && v.base.spread > 0.3)
+    out.push(`Die Modelle liegen weit auseinander (Streuung ${pctAbs(v.base.spread, 0)}). Ein einzelner Modellwert wäre hier eine Scheingenauigkeit.`);
+  if (c.g.eps5 < 0)
+    out.push("Der Gewinn je Aktie ist über fünf Jahre gefallen. Ein niedriges KGV kann dann eher Warnsignal als Chance sein.");
+  if (c.payout > 0.8)
+    out.push(`Die Ausschüttungsquote von ${pctAbs(c.payout, 0)} lässt wenig Puffer für schwächere Jahre.`);
+  if (c.vol > 0.4)
+    out.push(`Bei ${pctAbs(c.vol, 0)} Jahresvolatilität sind zwischenzeitliche Kursverluste von 30 % und mehr normal, nicht außergewöhnlich.`);
+  if (z.ok && z.z < 2.99)
+    out.push(`Der Altman-Z-Score von ${de(z.z, 2)} liegt in der ${z.zone}.`);
+  if (c.sect.pe && c.eps > 0 && c.price / c.eps > c.sect.pe * 1.5)
+    out.push("Der Bewertungsaufschlag zum Sektor ist groß – er unterstellt, dass die Sonderstellung dauerhaft ist.");
+  if (v.upside > 0.15 && q.score < 60)
+    out.push("Ein Abschlag bei schwacher Geschäftsqualität ist oft kein Fehler des Marktes, sondern seine Antwort auf sinkende Erträge.");
+  if (c.moatScore < 7)
+    out.push(`Der Burggraben ist mit ${c.moatScore} von 10 eher schmal – Wettbewerber können Margen schneller angreifen, als es die Modelle unterstellen.`);
+  if (c.concentration[0]) out.push(`Klumpenrisiko: ${c.concentration[0]}.`);
+  (c.risks || []).slice(0, 2).forEach((x) => out.push(x + "."));
+  c.flags.forEach((f) => out.push(f));
+  if (!out.length) out.push("Kein einzelner Punkt sticht heraus – das ersetzt keine eigene Prüfung der Quartalszahlen.");
+  return out.slice(0, 6);
+}
+
+/* --- Short-Radar (nur Kontext, keine Empfehlung) -------------------------- */
+function shortRadar(c, v, q, mom6) {
+  const over = v.upside === null ? 0 : clamp(-v.upside * 120, 0, 45);
+  const trend = clamp(-mom6 * 100, 0, 25);
+  const qual = clamp((60 - q.score) * 0.5, 0, 20);
+  const earn = clamp(-c.g.eps5 * 60, 0, 10);
+  const score = clamp(over + trend + qual + earn, 0, 100);
+  return {
+    score,
+    parts: [
+      { k: "Bewertungsaufschlag", v: over, max: 45 },
+      { k: "Negativer Kurstrend (6 M)", v: trend, max: 25 },
+      { k: "Schwache Geschäftsqualität", v: qual, max: 20 },
+      { k: "Fallender Gewinn", v: earn, max: 10 },
+    ],
+    squeeze: c.shortInt > 0.02,
+  };
+}
+
+/* ============================================================================
+   3. DARSTELLUNG — Bausteine
+   ========================================================================== */
+
+const TONE = { cheap: "var(--cheap)", fair: "var(--fair)", rich: "var(--rich)" };
+const toneFor = (u) => (u === null ? "fair" : u > 0.1 ? "cheap" : u < -0.1 ? "rich" : "fair");
+function heat(u) {
+  if (u === null) return "var(--panel2)";
+  const x = clamp(u, -0.5, 0.5) / 0.5;
+  return x >= 0
+    ? `rgba(0,196,106,${0.1 + x * 0.45})`
+    : `rgba(255,69,58,${0.1 + -x * 0.45})`;
+}
+
+function Panel({ title, sub, children, style }) {
+  return (
+    <section className="kb-panel" style={style}>
+      {title && <h2 className="kb-h">{title}</h2>}
+      {sub && <div className="kb-sub">{sub}</div>}
+      {children}
+    </section>
+  );
+}
+function Cells({ items }) {
+  return (
+    <div className="kb-grid">
+      {items.map((it, i) => (
+        <div className="kb-cell" key={i}>
+          <span className="k">{it.k}</span>
+          <span className="v" style={{ color: it.tone || "inherit" }}>{it.v}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function Row({ lbl, children, tone }) {
+  return (
+    <div className="kb-row">
+      <span className="lbl">{lbl}</span>
+      <span className="num" style={{ color: tone || "inherit" }}>{children}</span>
+    </div>
+  );
+}
+function Meter({ label, value, note, color }) {
+  return (
+    <div style={{ margin: "10px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+        <span>{label}</span>
+        <span className="num" style={{ color: "var(--muted)" }}>{Math.round(value)}</span>
+      </div>
+      <div className="kb-bar"><i style={{ width: `${clamp(value, 0, 100)}%`, background: color }} /></div>
+      {note && <div className="kb-note" style={{ marginTop: 3 }}>{note}</div>}
+    </div>
+  );
+}
+function Slider({ label, hint, value, min, max, step, format, onChange }) {
+  return (
+    <div className="kb-sl">
+      <div className="top"><span>{label}</span><b>{format(value)}</b></div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        aria-label={label} onChange={(e) => onChange(parseFloat(e.target.value))} />
+      {hint && <small>{hint}</small>}
+    </div>
+  );
+}
+
+/* --- Kopf: Kurs, Urteil, Fair-Value-Band --------------------------------- */
+function Header({ c, v, verdict, onPrice, custom, watched, onWatch }) {
+  const [edit, setEdit] = useState(false);
+  const [draft, setDraft] = useState("");
+  const lo = Math.min(v.bear.fair ?? c.price, c.price) * 0.9;
+  const hi = Math.max(v.bull.fair ?? c.price, c.price) * 1.1;
+  const at = (x) => `${clamp(((x - lo) / (hi - lo)) * 100, 0, 100)}%`;
+  const b = v.bear.fair, u = v.bull.fair, f = v.base.fair;
+  return (
+    <Panel style={{ borderLeft: `2px solid ${TONE[verdict.tone]}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 21, display: "flex", alignItems: "center", gap: 8 }}>
+            <button className="kb-star" data-on={watched ? "1" : "0"} onClick={onWatch}
+              aria-label={watched ? "Aus der Merkliste entfernen" : "Zur Merkliste hinzufügen"}
+              title={watched ? "Gemerkt" : "Merken"}>
+              {watched ? "★" : "☆"}
+            </button>
+            {c.name}
+          </h1>
+          <div className="kb-sub" style={{ marginBottom: 0 }}>{c.t} · {c.sector} · {c.cur === "€" ? "EUR" : "USD"}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div className="num" style={{ fontSize: 24, fontWeight: 600 }}>{money(c.price, c.cur)}</div>
+          <button
+            className="kb-btn"
+            style={{ padding: "3px 9px", fontSize: 11, marginTop: 5 }}
+            onClick={() => { setDraft(String(c.price)); setEdit(!edit); }}
+          >
+            {custom ? "eigener Kurs · ändern" : "Demokurs · anpassen"}
+          </button>
+        </div>
+      </div>
+
+      {edit && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+          <input
+            type="number" step="0.01" inputMode="decimal" value={draft} autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { const n = parseFloat(draft); if (n > 0) { onPrice(n); setEdit(false); } } }}
+            aria-label="Aktuellen Kurs eingeben"
+            style={{
+              flex: "1 1 120px", minWidth: 110, background: "var(--panel2)", border: "1px solid var(--line)",
+              color: "var(--ink)", borderRadius: 12, padding: "9px 12px", fontSize: 15, outline: "none",
+            }}
+          />
+          <button className="kb-btn" data-on="1"
+            onClick={() => { const n = parseFloat(draft); if (n > 0) { onPrice(n); setEdit(false); } }}>
+            Übernehmen
+          </button>
+          {custom && (
+            <button className="kb-btn" onClick={() => { onPrice(null); setEdit(false); }}>Zurücksetzen</button>
+          )}
+          <div className="kb-note" style={{ flexBasis: "100%" }}>
+            Kurs aus Ihrer Broker-App eintragen — Modellwerte, Einschätzung, Multiplikatoren, Sensitivität und
+            der Assistent rechnen sofort damit weiter. Die Fundamentaldaten bleiben die des Demo-Datensatzes.
+          </div>
+        </div>
+      )}
+
+      <div className="kb-band">
+        <div className="track" />
+        {b && u && <div className="span" style={{ left: at(b), width: `calc(${at(u)} - ${at(b)})` }} />}
+        {f && <div className="base" style={{ left: at(f) }} />}
+        {f && <div className="tag dn" style={{ left: at(f) }}>Modellwert {money(f, c.cur, 0)}</div>}
+        <div className="now" style={{ left: at(c.price) }} />
+        <div className="tag up" style={{ left: at(c.price) }}>Kurs</div>
+        {b && <div className="tag dn" style={{ left: 0, transform: "none" }}>{money(b, c.cur, 0)}</div>}
+        {u && <div className="tag dn" style={{ right: 0, left: "auto", transform: "none" }}>{money(u, c.cur, 0)}</div>}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 22 }}>
+        <span className="kb-pill" style={{ color: TONE[verdict.tone], borderColor: TONE[verdict.tone] }}>
+          {verdict.label}
+        </span>
+        <span className="num" style={{ color: TONE[verdict.tone], fontSize: 15 }}>
+          {pct(v.upside)} zum Modellwert
+        </span>
+        <span className="kb-note">Streuung der Modelle ±{pctAbs(v.base.spread || 0, 0)}</span>
+        {custom && <span className="kb-pill">eigener Kurs</span>}
+      </div>
+      {c.flags.length > 0 && (
+        <div className="kb-info" style={{ marginTop: 12 }}>
+          {c.flags.map((f2, i) => <div key={i} style={{ marginBottom: i < c.flags.length - 1 ? 6 : 0 }}>{f2}</div>)}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/* --- Chart mit eingezeichnetem Fair-Value-Band ---------------------------- */
+const TV_SYMBOL = {
+  "AAPL": "NASDAQ:AAPL", "MSFT": "NASDAQ:MSFT", "NVDA": "NASDAQ:NVDA",
+  "GOOGL": "NASDAQ:GOOGL", "AMZN": "NASDAQ:AMZN", "TSLA": "NASDAQ:TSLA",
+  "KO": "NYSE:KO", "JNJ": "NYSE:JNJ", "PFE": "NYSE:PFE",
+  "SAP": "XETR:SAP", "ASML": "EURONEXT:ASML", "ALV.DE": "XETR:ALV", "VOW3.DE": "XETR:VOW3",
+};
+
+// iframe-Einbettung statt tv.js: funktioniert auch, wenn die Datei direkt
+// vom Dateisystem geoeffnet wird (file://), wo Skript-Widgets scheitern.
+function tvUrl(sym, interval, studies) {
+  const p = new URLSearchParams({
+    symbol: sym, interval: interval, theme: "dark", style: "1",
+    locale: "de_DE", timezone: "Europe/Berlin", withdateranges: "1",
+    hide_side_toolbar: "0", allow_symbol_change: "0", save_image: "0",
+    backgroundColor: "#131316", gridColor: "#2A2A2E", hideideas: "1",
+  });
+  studies.forEach((st) => p.append("studies", st));
+  return "https://s.tradingview.com/widgetembed/?" + p.toString();
+}
+
+const EMA_SETS = [
+  { key: "trend", label: "EMA 20 / 50 / 200", studies: [
+      "STD;EMA%1FEMA%1F20", "STD;EMA%1FEMA%1F50", "STD;EMA%1FEMA%1F200"] },
+  { key: "momentum", label: "EMA + RSI", studies: [
+      "STD;EMA%1FEMA%1F20", "STD;EMA%1FEMA%1F50", "STD;RSI"] },
+  { key: "clean", label: "nur Kurs", studies: [] },
+];
+const INTERVALS = [["D", "Tag"], ["W", "Woche"], ["60", "1 Std."]];
+
+function Chart({ c, v, series }) {
+  const [iv, setIv] = useState("D");
+  const [set, setSet] = useState("trend");
+  const sym = TV_SYMBOL[c.t];
+  const cfg = EMA_SETS.find((x) => x.key === set) || EMA_SETS[0];
+
+  return (
+    <Panel title="Kursverlauf" sub="Live-Chart von TradingView mit echten Kursdaten. Je nach Boerse in Echtzeit oder verzoegert.">
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {INTERVALS.map(([k, lab]) => (
+          <button key={k} className="kb-btn" data-on={iv === k ? "1" : "0"} onClick={() => setIv(k)}>{lab}</button>
+        ))}
+        <span style={{ flex: 1 }} />
+        {EMA_SETS.map((x) => (
+          <button key={x.key} className="kb-btn" data-on={set === x.key ? "1" : "0"} onClick={() => setSet(x.key)}>
+            {x.label}
+          </button>
+        ))}
+      </div>
+      {sym ? (
+        <iframe
+          key={sym + iv + set}
+          title={"Chart " + c.t}
+          src={tvUrl(sym, iv, cfg.studies)}
+          style={{ width: "100%", height: 420, border: "1px solid var(--line)", borderRadius: 12, background: "var(--panel2)" }}
+          allowtransparency="true" scrolling="no" frameBorder="0"
+        />
+      ) : (
+        <div className="kb-info">Fuer diesen Wert ist kein Boersensymbol hinterlegt.</div>
+      )}
+      <div className="kb-note" style={{ marginTop: 8 }}>
+        Laedt der Chart nicht, fehlt die Internetverbindung oder ein Blocker verhindert tradingview.com.
+        Die Bewertung unten funktioniert davon unabhaengig.
+      </div>
+
+      <div className="kb-rule" />
+      <h3 className="kb-h">Fair-Value-Band zum Vergleich</h3>
+      <div className="kb-sub">Der Chart zeigt den echten Kurs, die Modellwerte stehen hier daneben.</div>
+      <Row lbl="Worst Case" tone="var(--rich)">{money(v.bear.fair, c.cur)}</Row>
+      <Row lbl="Gewichteter Modellwert">{money(v.base.fair, c.cur)}</Row>
+      <Row lbl="Best Case" tone="var(--cheap)">{money(v.bull.fair, c.cur)}</Row>
+      <Row lbl="Eingetragener Kurs" tone={TONE[toneFor(v.upside)]}>
+        {money(c.price, c.cur)} ({pct(v.upside, 0)})
+      </Row>
+      <div className="kb-note" style={{ marginTop: 10 }}>
+        Die gleitenden Durchschnitte im Chart beschreiben, wo der Kurs zuletzt lag - sie sagen nichts
+        darueber, wo er als naechstes hingeht. Sie sind eine Beschreibung der Vergangenheit, kein Signal.
+      </div>
+    </Panel>
+  );
+}
+
+/* --- Annahmen-Regler ------------------------------------------------------ */
+function Assumptions({ c, a, set }) {
+  const sug = suggestedWacc(c, a.rf);
+  return (
+    <Panel title="Annahmen" sub="Jede Änderung rechnet alle Modelle sofort neu. Nichts hier ist eine Blackbox.">
+      <Slider label="Risikofreier Zins (Makro-Umfeld)" value={a.rf} min={0.005} max={0.07} step={0.001}
+        format={(x) => pctAbs(x, 2)}
+        hint="Leitet den vorgeschlagenen Diskontsatz ab und wirkt auf jede Barwertrechnung."
+        onChange={(x) => set({ ...a, rf: x, wacc: a.waccManual ? a.wacc : suggestedWacc(c, x), aaa: round4(x + 0.012) })} />
+      <Slider label="Diskontsatz (WACC)" value={a.wacc} min={0.04} max={0.18} step={0.0025}
+        format={(x) => pctAbs(x, 2)}
+        hint={`Vorschlag aus Zins und Beta ${de(c.beta, 2)}: ${pctAbs(sug, 2)}.`}
+        onChange={(x) => set({ ...a, wacc: x, waccManual: true })} />
+      <Slider label="Wachstum Jahr 1 (läuft bis Endjahr aus)" value={a.g1} min={-0.1} max={0.35} step={0.005}
+        format={(x) => pct(x, 1)}
+        hint={`Analystenschätzung für die nächsten Jahre: ${pct(c.g.fwd, 0)} p. a.`}
+        onChange={(x) => set({ ...a, g1: x })} />
+      <Slider label="Ewiges Wachstum" value={a.gT} min={0} max={0.035} step={0.0025}
+        format={(x) => pctAbs(x, 2)} hint="Auf Dauer kann kein Unternehmen schneller wachsen als die Wirtschaft."
+        onChange={(x) => set({ ...a, gT: x })} />
+      <Slider label="Prognosezeitraum" value={a.years} min={5} max={15} step={1}
+        format={(x) => `${x} Jahre`} hint="Längerer Zeitraum verschiebt Gewicht vom Endwert in die Detailplanung."
+        onChange={(x) => set({ ...a, years: x })} />
+      <div style={{ display: "flex", gap: 8, margin: "12px 0 4px", flexWrap: "wrap" }}>
+        <button className="kb-btn" data-on={a.term === "gordon" ? "1" : "0"} onClick={() => set({ ...a, term: "gordon" })}>
+          Endwert: ewiges Wachstum
+        </button>
+        <button className="kb-btn" data-on={a.term === "exit" ? "1" : "0"} onClick={() => set({ ...a, term: "exit" })}>
+          Endwert: Exit-Multiplikator
+        </button>
+        <button className="kb-btn" onClick={() => set(defaultAssumptions(c))}>Zurücksetzen</button>
+      </div>
+      {a.term === "exit" && (
+        <Slider label="Exit-Multiplikator auf EBITDA" value={a.exitMult} min={4} max={30} step={0.5}
+          format={(x) => `${de(x, 1)}x`} hint="Alternative zum ewigen Wachstum: Verkaufswert am Ende des Zeitraums."
+          onChange={(x) => set({ ...a, exitMult: x })} />
+      )}
+    </Panel>
+  );
+}
+
+/* --- Modelle im Einzelnen ------------------------------------------------- */
+function Models({ c, v }) {
+  const rows = Object.keys(MODEL_META).map((k) => {
+    const r = v.base.all[k];
+    const used = v.base.used.find((u) => u.key === k);
+    return { k, meta: MODEL_META[k], r, used };
+  });
+  const d = v.base.all.dcf;
+  return (
+    <Panel title="Die Modelle einzeln" sub="Gewichtet wird nur, was für dieses Geschäftsmodell trägt.">
+      <div className="kb-scroll">
+        <table className="kb-tbl">
+          <thead>
+            <tr><th>Modell</th><th>Wert je Aktie</th><th>Abweichung</th><th>Gewicht</th></tr>
+          </thead>
+          <tbody>
+            {rows.map(({ k, meta, r, used }) => {
+              const up = r && r.ok ? r.value / c.price - 1 : null;
+              return (
+                <tr key={k}>
+                  <td>
+                    <div>{meta.label}</div>
+                    {(!r || !r.ok) && <div className="kb-note">{r ? r.why : "nicht verfügbar"}</div>}
+                    {r && r.ok && r.mult && (
+                      <div className="kb-note">{de(r.mult, 1)}x auf {r.unit}</div>
+                    )}
+                    {k === "ddm" && r.ok && (
+                      <div className="kb-note">Eigenkapitalkosten {pctAbs(r.r)}, Dividendenwachstum {pctAbs(r.g)}</div>
+                    )}
+                  </td>
+                  <td>{r && r.ok ? money(r.value, c.cur) : "–"}</td>
+                  <td style={{ color: up === null ? "var(--faint)" : TONE[toneFor(up)] }}>{up === null ? "–" : pct(up, 0)}</td>
+                  <td>{used ? pctAbs(used.weightNorm, 0) : "0 %"}</td>
+                </tr>
+              );
+            })}
+            <tr>
+              <td style={{ fontWeight: 600 }}>Gewichteter Modellwert</td>
+              <td style={{ fontWeight: 600 }}>{money(v.base.fair, c.cur)}</td>
+              <td style={{ fontWeight: 600, color: TONE[toneFor(v.upside)] }}>{pct(v.upside, 0)}</td>
+              <td>100 %</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="kb-rule" />
+      <h3 className="kb-h">Szenarien</h3>
+      <div className="kb-sub">Best und Worst Case verschieben Wachstum, Diskontsatz und Multiplikatoren gemeinsam – nicht nur eine Stellschraube.</div>
+      <Row lbl="Worst Case (Wachstum −3 Pp., WACC +1,5 Pp., Multiplikatoren −20 %)" tone="var(--rich)">{money(v.bear.fair, c.cur)}</Row>
+      <Row lbl="Base Case (Ihre Annahmen)">{money(v.base.fair, c.cur)}</Row>
+      <Row lbl="Best Case (Wachstum +3 Pp., WACC −1 Pp., Multiplikatoren +20 %)" tone="var(--cheap)">{money(v.bull.fair, c.cur)}</Row>
+      <div className="kb-note" style={{ marginTop: 8 }}>
+        Streuung der Einzelmodelle im Base Case: ±{money(v.base.sd, c.cur)} ({pctAbs(v.base.spread || 0, 0)}).
+        Das ist ein Maß für Modellunsicherheit, kein statistisches Konfidenzintervall – es sagt, wie einig sich die Verfahren sind.
+      </div>
+
+      {d.ok && (
+        <>
+          <div className="kb-rule" />
+          <h3 className="kb-h">Woraus der DCF-Wert besteht</h3>
+          <div className="kb-sub">Je größer der Endwert-Anteil, desto mehr hängt das Ergebnis an Annahmen statt an Planzahlen.</div>
+          <Row lbl="Barwert der Planjahre">{big(d.pv, c.cur)}</Row>
+          <Row lbl="Barwert des Endwerts">{big(d.pvTv, c.cur)}</Row>
+          <Row lbl="Anteil Endwert am Unternehmenswert">{pctAbs(d.tvShare, 0)}</Row>
+          <Row lbl="Unternehmenswert">{big(d.ev, c.cur)}</Row>
+          <Row lbl="abzüglich Nettoschulden">{big(-c.netDebt, c.cur)}</Row>
+          <Row lbl="Eigenkapitalwert je Aktie">{money(d.value, c.cur)}</Row>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/* --- Einordnung: Skala, eigene Historie, Peers, Makro --------------------- */
+function Context({ c, v, a, series }) {
+  const dev = clamp(v.upside ?? 0, -1, 1);
+  const pos = ((clamp(dev, -0.5, 0.5) + 0.5) / 1) * 100;
+  const peNow = c.eps > 0 ? c.price / c.eps : null;
+  const peers = c.peers.map((p) => BY_TICKER[p]).filter(Boolean);
+  const rfUp = { ...a, rf: a.rf + 0.01, wacc: a.wacc + 0.01, aaa: a.aaa + 0.01 };
+  const vRf = valuation(c, rfUp);
+  const mom6 = momentum(series, 6);
+
+  return (
+    <Panel title="Einordnung" sub="Billig oder teuer ist immer relativ – zur eigenen Historie, zum Sektor und zum Zinsumfeld.">
+      <div style={{ position: "relative", height: 46, margin: "6px 0 18px" }}>
+        <div style={{
+          position: "absolute", top: 16, left: 0, right: 0, height: 8, borderRadius: 4,
+          background: "linear-gradient(90deg,var(--rich),rgba(255,255,255,.35),var(--cheap))", opacity: 0.9,
+        }} />
+        <div style={{ position: "absolute", top: 8, left: `${pos}%`, width: 2, height: 24, background: "var(--ink)" }} />
+        <div style={{ position: "absolute", top: 32, left: `${pos}%`, transform: "translateX(-50%)", fontSize: 11, whiteSpace: "nowrap" }}>
+          {pct(v.upside, 0)}
+        </div>
+        <div className="kb-note" style={{ position: "absolute", top: 0, left: 0 }}>−50 % teuer</div>
+        <div className="kb-note" style={{ position: "absolute", top: 0, right: 0 }}>+50 % günstig</div>
+      </div>
+
+      <h3 className="kb-h">Gegen die eigene Historie</h3>
+      <div className="kb-sub">Aktueller Multiplikator gegen den Fünfjahres-Median des Unternehmens.</div>
+      {peNow && isNum(c.hist.pe) && (
+        <Row lbl={`KGV heute ${de(peNow, 1)} · Median ${de(c.hist.pe, 1)}`} tone={TONE[toneFor(c.hist.pe / peNow - 1)]}>
+          {pct(peNow / c.hist.pe - 1, 0)}
+        </Row>
+      )}
+      {isNum(c.hist.ps) && (
+        <Row lbl={`KUV heute ${de(c.price / c.sps, 1)} · Median ${de(c.hist.ps, 1)}`} tone={TONE[toneFor(c.hist.ps / (c.price / c.sps) - 1)]}>
+          {pct((c.price / c.sps) / c.hist.ps - 1, 0)}
+        </Row>
+      )}
+      {isNum(c.hist.pb) && (
+        <Row lbl={`KBV heute ${de(c.price / c.bvps, 1)} · Median ${de(c.hist.pb, 1)}`} tone={TONE[toneFor(c.hist.pb / (c.price / c.bvps) - 1)]}>
+          {pct((c.price / c.bvps) / c.hist.pb - 1, 0)}
+        </Row>
+      )}
+
+      <div className="kb-rule" />
+      <h3 className="kb-h">Gegen Sektor und Wettbewerber</h3>
+      <div className="kb-scroll" style={{ marginTop: 8 }}>
+        <table className="kb-tbl">
+          <thead><tr><th>Wert</th><th>KGV</th><th>EV/EBITDA</th><th>Op. Marge</th><th>Kapitalrendite</th></tr></thead>
+          <tbody>
+            <tr>
+              <td style={{ color: "var(--accent)" }}>{c.t}</td>
+              <td>{peNow ? de(peNow, 1) : "–"}</td>
+              <td>{isNum(c.ebitda) && isNum(c.netDebt) ? de((c.price * c.shares + c.netDebt) / c.ebitda, 1) : "–"}</td>
+              <td>{pctAbs(c.om, 0)}</td>
+              <td>{pctAbs(isNum(c.roic) ? c.roic : c.roe, 0)}</td>
+            </tr>
+            {peers.map((p) => (
+              <tr key={p.t}>
+                <td>{p.t}</td>
+                <td>{p.eps > 0 ? de(p.price / p.eps, 1) : "–"}</td>
+                <td>{isNum(p.ebitda) && isNum(p.netDebt) ? de((p.price * p.shares + p.netDebt) / p.ebitda, 1) : "–"}</td>
+                <td>{pctAbs(p.om, 0)}</td>
+                <td>{pctAbs(isNum(p.roic) ? p.roic : p.roe, 0)}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ color: "var(--muted)" }}>Sektor</td>
+              <td>{isNum(c.sect.pe) ? de(c.sect.pe, 1) : "–"}</td>
+              <td>{isNum(c.sect.ev) ? de(c.sect.ev, 1) : "–"}</td>
+              <td>–</td><td>–</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="kb-rule" />
+      <h3 className="kb-h">Zins- und Marktumfeld</h3>
+      <div className="kb-sub">Bewertungen sind Barwerte. Steigen die Zinsen, sinkt der Barwert weit entfernter Gewinne.</div>
+      <Row lbl="Modellwert bei heutigem Zins">{money(v.base.fair, c.cur)}</Row>
+      <Row lbl="bei einem Zins-Anstieg um 1 Prozentpunkt" tone="var(--rich)">
+        {money(vRf.base.fair, c.cur)} ({pct((vRf.base.fair ?? 0) / (v.base.fair || 1) - 1, 0)})
+      </Row>
+      <Row lbl="Kurstrend der letzten 6 Monate" tone={TONE[mom6 > 0 ? "cheap" : "rich"]}>{pct(mom6, 0)}</Row>
+      <div className="kb-note" style={{ marginTop: 8 }}>
+        Wachstumswerte mit spätem Cashflow reagieren stärker auf Zinsänderungen als Substanzwerte.
+        Der Effekt oben zeigt genau diesen Hebel für {c.t}.
+      </div>
+    </Panel>
+  );
+}
+
+/* --- Qualität ------------------------------------------------------------- */
+function Quality({ c, q }) {
+  return (
+    <>
+      <Panel title="Geschäftsqualität" sub={`Gesamtwert ${Math.round(q.score)} von 100 – gewichtet nach Burggraben, Rendite und Bilanz.`}>
+        {q.parts.map((p) => (
+          <Meter key={p.k} label={p.k} value={p.v}
+            color={p.v > 66 ? "var(--ink)" : p.v > 40 ? "var(--muted)" : "var(--faint)"} />
+        ))}
+      </Panel>
+
+      <Panel title="Wettbewerbsvorteil">
+        <p className="kb-body kb-serif">{c.moat}</p>
+        <Row lbl="Burggraben-Einschätzung">{c.moatScore} / 10</Row>
+        <Row lbl="Bruttomarge">{pctAbs(c.gm, 0)}</Row>
+        <Row lbl="Operative Marge">{pctAbs(c.om, 0)}</Row>
+        <Row lbl="Kapitalrendite">{pctAbs(isNum(c.roic) ? c.roic : c.roe, 0)}</Row>
+      </Panel>
+
+      <Panel title="Bilanz und Kapitalallokation">
+        <p className="kb-body kb-serif">{c.mgmt}</p>
+        <Row lbl="Nettoschulden / EBITDA">{q.netDebtEbitda === null ? "nicht vergleichbar" : `${de(q.netDebtEbitda, 1)}x`}</Row>
+        <Row lbl="Eigenkapitalquote">{isNum(c.equity) && isNum(c.ta) ? pctAbs(c.equity / c.ta, 0) : "–"}</Row>
+        <Row lbl="Dividendenrendite">{pctAbs(c.divY, 2)}</Row>
+        <Row lbl="Ausschüttungsquote">{pctAbs(c.payout, 0)}</Row>
+        <Row lbl="Rückkaufrendite">{pctAbs(c.buyback, 1)}</Row>
+        <Row lbl="Gesamte Aktionärsrendite">{pctAbs(c.divY + c.buyback, 1)}</Row>
+      </Panel>
+
+      <Panel title="Wachstum und Zyklus">
+        <Row lbl="Umsatzwachstum 5 Jahre p. a.">{pct(c.g.rev5, 0)}</Row>
+        <Row lbl="Gewinnwachstum 5 Jahre p. a." tone={c.g.eps5 < 0 ? "var(--rich)" : "inherit"}>{pct(c.g.eps5, 0)}</Row>
+        <Row lbl="Analystenschätzung nächste Jahre">{pct(c.g.fwd, 0)}</Row>
+        <Row lbl="Zyklik des Geschäftsmodells">
+          {c.profile === "cyclical" ? "ausgeprägt" : c.profile === "financial" ? "zins- und schadenabhängig" : "moderat"}
+        </Row>
+      </Panel>
+    </>
+  );
+}
+
+/* --- Risiko --------------------------------------------------------------- */
+function Risk({ c, v, a, r, z }) {
+  const sens = useMemo(() => sensitivity(c, a), [c, a]);
+  return (
+    <>
+      <Panel title="Risikoprofil" sub={`Gesamtwert ${Math.round(r.score)} von 100 – höher heißt riskanter, nicht schlechter.`}>
+        {r.parts.map((p) => (
+          <Meter key={p.k} label={p.k} value={p.v} note={p.note}
+            color={p.v > 66 ? "var(--ink)" : p.v > 40 ? "var(--muted)" : "var(--faint)"} />
+        ))}
+      </Panel>
+
+      <Panel title="Insolvenz- und Bilanzrisiko">
+        {z.ok ? (
+          <>
+            <Row lbl="Altman Z-Score">
+              {de(z.z, 2)} · {z.zone}
+            </Row>
+            <div className="kb-note" style={{ marginTop: 8 }}>
+              Über 2,99 gilt als sicher, zwischen 1,81 und 2,99 als Grauzone, darunter als kritisch.
+              Der Score wurde für Industrieunternehmen entwickelt; bei kapitalarmen Software- oder
+              Plattformgeschäften fällt er systematisch zu hoch aus.
+            </div>
+          </>
+        ) : (
+          <div className="kb-info">{z.why}</div>
+        )}
+      </Panel>
+
+      <Panel title="Klumpenrisiken">
+        {c.concentration.map((k, i) => <Row key={i} lbl={k}> </Row>)}
+        <div className="kb-rule" />
+        <h3 className="kb-h">Wesentliche Einzelrisiken</h3>
+        <ul style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 14, lineHeight: 1.6 }}>
+          {c.risks.map((k, i) => <li key={i} style={{ marginBottom: 6 }}>{k}</li>)}
+        </ul>
+      </Panel>
+
+      <Panel title="Sensitivität des DCF-Werts" sub="Zeilen: Diskontsatz. Spalten: ewiges Wachstum. Farbe: Abweichung vom heutigen Kurs.">
+        {sens.cells[0][0] === null ? (
+          <div className="kb-info">DCF für dieses Geschäftsmodell nicht anwendbar.</div>
+        ) : (
+          <div className="kb-scroll">
+            <div className="kb-heat" style={{ gridTemplateColumns: `64px repeat(${sens.gs.length},1fr)`, minWidth: 340 }}>
+              <div style={{ color: "var(--faint)" }}>WACC \ g</div>
+              {sens.gs.map((g) => <div key={g} style={{ color: "var(--faint)" }}>{pctAbs(g, 2)}</div>)}
+              {sens.waccs.map((w, i) => (
+                <React.Fragment key={w}>
+                  <div style={{ color: "var(--faint)" }}>{pctAbs(w, 2)}</div>
+                  {sens.cells[i].map((val, j) => (
+                    <div key={j} style={{ background: heat(val === null ? null : val / c.price - 1) }}>
+                      {val === null ? "–" : de(val, 0)}
+                    </div>
+                  ))}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="kb-note" style={{ marginTop: 10 }}>
+          Wenn ein halber Prozentpunkt beim Endwachstum den Modellwert um ein Drittel verschiebt, ist nicht das
+          Modell falsch – es zeigt nur, wie wenig Präzision in einer solchen Rechnung überhaupt steckt.
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+/* --- Optionen und Short-Kontext ------------------------------------------- */
+function Options({ c, a, radar, mom6 }) {
+  const [exp, setExp] = useState(30);
+  const chain = useMemo(() => optionChain(c, a.rf), [c, a.rf]);
+  const cur = chain.find((x) => x.days === exp) || chain[0];
+  return (
+    <>
+      <Panel title="Optionskette" sub="Modellpreise nach Black-Scholes auf Basis der Volatilität – Demodaten, keine Marktquotierungen.">
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {chain.map((x) => (
+            <button key={x.days} className="kb-btn" data-on={exp === x.days ? "1" : "0"} onClick={() => setExp(x.days)}>
+              {x.days} Tage
+            </button>
+          ))}
+        </div>
+        <div className="kb-scroll">
+          <table className="kb-tbl">
+            <thead>
+              <tr><th>Call</th><th>Open Interest</th><th>Strike</th><th>Impl. Vola</th><th>Put</th><th>Open Interest</th></tr>
+            </thead>
+            <tbody>
+              {cur.rows.map((r) => (
+                <tr key={r.strike}>
+                  <td>{money(r.call, c.cur)}</td>
+                  <td style={{ color: "var(--faint)" }}>{de(r.oiCall, 0)}</td>
+                  <td style={{ color: Math.abs(r.strike - c.price) / c.price < 0.03 ? "var(--accent)" : "inherit" }}>
+                    {de(r.strike, 1)}
+                  </td>
+                  <td>{pctAbs(r.iv, 0)}</td>
+                  <td>{money(r.put, c.cur)}</td>
+                  <td style={{ color: "var(--faint)" }}>{de(r.oiPut, 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="kb-note" style={{ marginTop: 10 }}>
+          Die implizite Volatilität steigt bei tieferen Strikes – dieser Schiefstand ist der Preis, den der Markt
+          für Absicherung nach unten verlangt. Historische Volatilität von {c.t}: {pctAbs(c.vol, 0)} p. a.
+        </div>
+      </Panel>
+
+      <Panel title="Short-Radar" sub="Nur ein Kontextwert. Er sagt, ob die klassischen Short-Merkmale zusammenkommen – nicht, dass Sie handeln sollten.">
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
+          <span className="num" style={{ fontSize: 28, color: "var(--ink)" }}>
+            {Math.round(radar.score)}
+          </span>
+          <span className="kb-note">von 100</span>
+        </div>
+        {radar.parts.map((p) => (
+          <Meter key={p.k} label={p.k} value={(p.v / p.max) * 100}
+            note={`${de(p.v, 0)} von ${p.max} möglichen Punkten`}
+            color={p.v / p.max > 0.6 ? "var(--ink)" : "var(--muted)"} />
+        ))}
+        <Row lbl="Leerverkaufsquote (Anteil der Aktien)">
+          {pctAbs(c.shortInt, 1)}
+        </Row>
+        <div className="kb-warn">
+          <b>Risikohinweis zu Short-Positionen.</b> Der Verlust ist beim Leerverkauf nach oben nicht begrenzt,
+          weil ein Kurs unbegrenzt steigen kann. Hinzu kommen Leihgebühren, Nachschusspflichten und das Risiko,
+          dass die Position zum ungünstigsten Zeitpunkt zwangsweise geschlossen wird.
+          {radar.squeeze && " Bei einer Leerverkaufsquote in dieser Höhe steigt zusätzlich die Gefahr eines Short Squeeze: Eindeckungskäufe treiben den Kurs weiter nach oben."}
+          {" "}Eine hohe Bewertung ist kein Zeitpunkt – teure Aktien können jahrelang teuer bleiben.
+        </div>
+        <div className="kb-note">
+          Diese Anwendung erteilt keine Kauf- oder Verkaufsaufträge und gibt keine Handelssignale. Sie ordnet Daten ein, mehr nicht.
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+/* --- Fazit ---------------------------------------------------------------- */
+function Conclusion({ c, v, q, r, z, verdict, mom6, a }) {
+  const text = useMemo(() => narrative(c, v, q, r, z, mom6, a), [c, v, q, r, z, mom6, a]);
+  const contra = useMemo(() => counterpoints(c, v, q, r, z), [c, v, q, r, z]);
+  const hz = horizonView(c, v.upside, q.score, r.score, mom6);
+  return (
+    <>
+      <Panel style={{ borderLeft: `2px solid ${TONE[verdict.tone]}` }}>
+        <div className="kb-sub" style={{ marginBottom: 6 }}>Gesamteinschätzung</div>
+        <h2 style={{ fontSize: 20, color: TONE[verdict.tone], marginBottom: 8 }}>{verdict.label}</h2>
+        <p className="kb-body kb-serif">{text}</p>
+        <Cells items={[
+          { k: "Abweichung", v: pct(v.upside, 0), tone: TONE[verdict.tone] },
+          { k: "Qualität", v: `${Math.round(q.score)} / 100` },
+          { k: "Risiko", v: `${Math.round(r.score)} / 100` },
+          { k: "Modellstreuung", v: pctAbs(v.base.spread || 0, 0) },
+        ]} />
+      </Panel>
+
+      <Panel title="Nach Zeithorizont" sub="Dieselbe Aktie kann kurz- und langfristig unterschiedlich zu beurteilen sein.">
+        <Row lbl="Kurzfristig (bis 12 Monate)"> </Row>
+        <p className="kb-body" style={{ marginTop: 6 }}>{hz.kurz}</p>
+        <div className="kb-rule" />
+        <Row lbl="Langfristig (ab 5 Jahren)"> </Row>
+        <p className="kb-body" style={{ marginTop: 6 }}>{hz.lang}</p>
+      </Panel>
+
+      <Panel title="Was gegen diese Einschätzung spricht" sub="Der Teil, den Bewertungsseiten gern weglassen.">
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14.5, lineHeight: 1.65 }}>
+          {contra.map((x, i) => <li key={i} style={{ marginBottom: 8 }}>{x}</li>)}
+        </ul>
+      </Panel>
+
+      <div className="kb-warn">
+        Keine Anlageberatung. Diese Seite dient der Information und Bildung. Sie kennt weder Ihre finanzielle
+        Situation noch Ihre Ziele und darf deshalb keine persönliche Empfehlung geben. Für Ihre Entscheidungen
+        tragen Sie die Verantwortung selbst – im Zweifel mit einer regulierten Beratung.
+      </div>
+    </>
+  );
+}
+
+/* --- Vergleich mehrerer Werte --------------------------------------------- */
+function Compare({ picks, toggle }) {
+  const rows = picks.map((t) => {
+    const c = BY_TICKER[t];
+    const a = defaultAssumptions(c);
+    const v = valuation(c, a);
+    const q = quality(c);
+    const z = altman(c);
+    const rp = riskProfile(c, z, 0);
+    return { c, v, q, r: rp, verdict: verdictOf(v.upside, q.score, rp.score) };
+  });
+  return (
+    <>
+      <Panel title="Vergleich" sub="Bis zu vier Werte nebeneinander, jeweils mit den Standardannahmen des Wertes.">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+          {COMPANIES.map((c) => (
+            <button key={c.t} className="kb-btn" data-on={picks.includes(c.t) ? "1" : "0"}
+              onClick={() => toggle(c.t)}>{c.t}</button>
+          ))}
+        </div>
+        {rows.length === 0 ? (
+          <div className="kb-info">Wählen Sie oben mindestens einen Wert aus.</div>
+        ) : (
+          <div className="kb-scroll">
+            <table className="kb-tbl">
+              <thead>
+                <tr><th>Wert</th><th>Kurs</th><th>Modellwert</th><th>Abweichung</th><th>KGV</th><th>Qualität</th><th>Risiko</th><th>Einschätzung</th></tr>
+              </thead>
+              <tbody>
+                {rows.map(({ c, v, q, r, verdict }) => (
+                  <tr key={c.t}>
+                    <td><div>{c.t}</div><div className="kb-note">{c.sector}</div></td>
+                    <td>{money(c.price, c.cur, 0)}</td>
+                    <td>{money(v.base.fair, c.cur, 0)}</td>
+                    <td style={{ color: TONE[verdict.tone] }}>{pct(v.upside, 0)}</td>
+                    <td>{c.eps > 0 ? de(c.price / c.eps, 1) : "–"}</td>
+                    <td>{Math.round(q.score)}</td>
+                    <td>{Math.round(r.score)}</td>
+                    <td style={{ textAlign: "right", color: TONE[verdict.tone] }}>{verdict.label}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="kb-note" style={{ marginTop: 10 }}>
+          Werte aus unterschiedlichen Branchen lassen sich über Multiplikatoren nur begrenzt vergleichen.
+          Aussagekräftiger sind die Spalten Abweichung, Qualität und Risiko.
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+/* --- Daten, Technik, rechtlicher Rahmen ----------------------------------- */
+function DataTab({ c }) {
+  const snippet = [
+    "// api/quote/[ticker].ts  —  Backend-Layer, hält den API-Schlüssel serverseitig",
+    "import { LRUCache } from 'lru-cache';",
+    "const cache = new LRUCache({ max: 500, ttl: 15 * 60 * 1000 }); // 15 Min",
+    "",
+    "export default async function handler(req, res) {",
+    "  const t = String(req.query.ticker).toUpperCase();",
+    "  if (cache.has(t)) return res.json({ ...cache.get(t), cached: true });",
+    "  try {",
+    "    const base = 'https://financialmodelingprep.com/api/v3/';",
+    "    const key  = '?apikey=' + process.env.FMP_KEY;",
+    "    const [profile, ratios, cash] = await Promise.all([",
+    "      fetch(base + 'profile/' + t + key).then(r => r.json()),",
+    "      fetch(base + 'key-metrics-ttm/' + t + key).then(r => r.json()),",
+    "      fetch(base + 'cash-flow-statement/' + t + key + '&limit=5').then(r => r.json()),",
+    "    ]);",
+    "    const data = normalize(profile[0], ratios[0], cash); // -> Form von COMPANIES",
+    "    cache.set(t, data);",
+    "    res.json(data);",
+    "  } catch (e) {",
+    "    res.status(502).json({ error: 'Datenquelle nicht erreichbar', retryAfter: 60 });",
+    "  }",
+    "}",
+  ].join("\n");
+
+  return (
+    <>
+      <Panel title="Woher die Zahlen kommen" sub="In dieser Fassung: ein fester Demo-Datensatz. Keine Live-Kurse.">
+        <Row lbl="Quelle">Demo-Snapshot</Row>
+        <Row lbl="Kursaktualität">nicht live – im Betrieb typisch 15 Minuten verzögert</Row>
+        <Row lbl="Abgedeckte Werte">{COMPANIES.length}</Row>
+        <div className="kb-info">
+          Die Kennzahlen sind gerundete, illustrative Größenordnungen und dienen dazu, die Bewertungslogik
+          nachvollziehbar zu machen. Für eine echte Entscheidung gehören geprüfte Geschäftsberichte und aktuelle
+          Kurse in die Rechnung.
+        </div>
+      </Panel>
+
+      <Panel title="Wenn Daten fehlen" sub="Fehlende Werte werden nicht geschätzt, sondern sichtbar gemacht.">
+        <p className="kb-body">
+          Jedes Modell prüft zuerst, ob seine Eingangsgrößen sinnvoll definiert sind. Ist das nicht der Fall,
+          wird es abgeschaltet, der Grund erscheint in der Modelltabelle, und das Gewicht verteilt sich auf die
+          verbleibenden Verfahren. Für {c.name} betrifft das aktuell:
+        </p>
+        {(() => {
+          const off = Object.keys(MODEL_META).filter((k) => {
+            const w = weightsFor(c)[k];
+            return w === 0;
+          });
+          const miss = [
+            !isNum(c.fcf) && "freier Cashflow",
+            !isNum(c.ebitda) && "EBITDA",
+            !isNum(c.netDebt) && "Nettoverschuldung",
+            !c.dps && "Dividende",
+          ].filter(Boolean);
+          return miss.length || off.length ? (
+            <>
+              {miss.length > 0 && <Row lbl="Nicht verfügbar">{miss.join(", ")}</Row>}
+              {off.length > 0 && <Row lbl="Modelle ohne Gewicht">{off.map((k) => MODEL_META[k].label).join(", ")}</Row>}
+            </>
+          ) : <Row lbl="Vollständigkeit">alle Eingangsgrößen vorhanden</Row>;
+        })()}
+      </Panel>
+
+      <Panel title="Aufbau" sub="Datenabruf, Berechnung und Darstellung sind bewusst getrennt.">
+        <Row lbl="Datenschicht">loadCompany() – ein Adapter, austauschbar gegen jede Finanz-API</Row>
+        <Row lbl="Rechenschicht">dcf, multiples, ddm, graham, sensitivity, altman – reine Funktionen</Row>
+        <Row lbl="Darstellung">React-Komponenten, die nur fertige Ergebnisse anzeigen</Row>
+        <p className="kb-body" style={{ marginTop: 12 }}>
+          Für den Live-Betrieb wandert der API-Aufruf in einen eigenen Backend-Layer: Der Schlüssel bleibt
+          serverseitig, Antworten werden zwischengespeichert, und Rate Limits treffen den Cache statt den Nutzer.
+        </p>
+        <pre>{snippet}</pre>
+        <div className="kb-note">
+          Empfohlene Cache-Zeiten: Kurse 15 Minuten, Fundamentaldaten 24 Stunden, Analystenschätzungen 12 Stunden.
+          Bei Erreichen des Limits liefert der Layer den letzten gültigen Stand mit Zeitstempel aus, statt einen Fehler zu zeigen.
+        </div>
+      </Panel>
+
+      <Panel title="Rechtlicher Rahmen">
+        <p className="kb-body">
+          Diese Anwendung ist ein Informations- und Bildungswerkzeug. Sie ist keine Anlageberatung, keine
+          Anlagevermittlung und keine Empfehlung zum Kauf oder Verkauf eines Wertpapiers. Es findet keine
+          Prüfung persönlicher Verhältnisse statt, damit auch keine Geeignetheits- oder Angemessenheitsprüfung.
+        </p>
+        <p className="kb-body">
+          Alle Modellwerte beruhen auf Annahmen, die sichtbar gemacht und von Ihnen verändert werden können.
+          Für die Richtigkeit der Daten und die Eintrittswahrscheinlichkeit von Prognosen wird keine Gewähr
+          übernommen. Kursverluste bis zum Totalverlust sind möglich; frühere Wertentwicklungen sagen nichts
+          über künftige aus.
+        </p>
+      </Panel>
+    </>
+  );
+}
+
+/* ============================================================================
+   Chat-Assistent
+   ----------------------------------------------------------------------------
+   Läuft über die sample-Fähigkeit der Artifact-Laufzeit (claude.use("sample")).
+   Eine veröffentlichte Seite darf selbst keine Netzwerkaufrufe machen — deshalb
+   kein fetch. Claude sieht dabei NUR, was hier als Turns übergeben wird, und
+   kann nicht im Web suchen. Genau so wird es dem Nutzer auch angesagt.
+   ========================================================================== */
+function pageInstructions(c, a, v, q, r, z, verdict) {
+  const d = v.base.all.dcf;
+  return `Du bist der Assistent im "Trade Republic Analyser", einer unabhängigen Aktienbewertungsseite (nicht mit der Trade Republic Bank GmbH verbunden). Verhalte dich wie ein normaler, hilfsbereiter Gesprächspartner.
+
+Du darfst über alles sprechen, worüber ein Sprachmodell sprechen kann: Begriffe erklären, Zusammenhänge einordnen, über Unternehmen und Branchen reden — auch über solche, die nicht im Datensatz dieser Seite stehen —, beim Nachdenken helfen, Beispiele rechnen, auch mal plaudern. Du bist kein Auskunftsautomat, der nur auf die Tabelle unten zeigt.
+
+Wozu du keinen Zugang hast: Internet, tagesaktuelle Kurse, Nachrichten von heute. Wenn genau das gefragt ist, sage es EINMAL in einem Nebensatz und mach dann weiter mit dem, was du beitragen kannst. Keine wiederholten Entschuldigungen, keine Standardfloskeln über deine Grenzen in jeder Antwort, kein Verweis auf andere Finanzseiten, wenn niemand danach gefragt hat.
+
+Über Firmen außerhalb des Datensatzes erzählst du aus deinem Wissen: Geschäftsmodell, Historie, Wettbewerb, Ertragstreiber, typische Risiken, grobe Größenordnungen. Konkrete Zahlen (Kurs, Marktkapitalisierung) nennst du dabei nicht als Fakt, sondern sagst einmal dazu, dass dein Wissensstand nicht aktuell ist.
+
+Keine Kauf- oder Verkaufsempfehlungen und keine Kursziele. Bei solchen Fragen stellst du sachlich dar, was dafür und was dagegen spricht, und weist einmal darauf hin, dass das keine Anlageberatung ist.
+
+Schreib natürlich und so lang, wie die Frage es verlangt — meist zwei bis sechs Sätze, bei einer echten Erklärfrage auch mehr. Nüchtern, ohne Werbesprache, Gegenargumente gehören dazu. Antworte auf Deutsch, außer der Nutzer schreibt in einer anderen Sprache.
+
+Die Seite zeigt gerade ${c.name} (${c.t}) und hat dazu Folgendes berechnet. Diese Werte sind ein illustrativer Demo-Datensatz ohne Erhebungsdatum, keine Live-Daten — sag das, falls jemand nach der Aktualität fragt. Wenn jemand nach dem aktuellen Kurs fragt: Du kennst ihn nicht, aber der Nutzer kann ihn oben rechts über "Demokurs · anpassen" selbst eintragen, dann rechnet die ganze Seite damit. Weise einmal darauf hin.${c.priceCustom ? " Der Kurs unten wurde bereits vom Nutzer eingetragen." : ""}
+Kurs ${money(c.price, c.cur)}${c.priceCustom ? " (vom Nutzer selbst eingetragen, also aktuell — die Fundamentaldaten stammen weiter aus dem Demo-Datensatz)" : " (Demowert)"} · Branche ${c.sector} · Einschätzung "${verdict.label}" · ${pct(v.upside)} zum gewichteten Modellwert ${money(v.base.fair, c.cur)} · Bandbreite ${money(v.bear.fair, c.cur)} bis ${money(v.bull.fair, c.cur)}.
+Modelle (Wert je Aktie, Gewicht): ${v.base.used.map((u) => `${MODEL_META[u.key].label} ${money(u.value, c.cur)} (${pctAbs(u.weightNorm, 0)})`).join("; ")}.
+Nicht angewandt: ${Object.keys(MODEL_META).filter((k) => !v.base.used.some((u) => u.key === k)).map((k) => `${MODEL_META[k].label} (${v.base.all[k] && v.base.all[k].why ? v.base.all[k].why : "kein Gewicht für dieses Geschäftsmodell"})`).join("; ") || "keine"}.
+Annahmen: Diskontsatz ${pctAbs(a.wacc, 2)}, Wachstum Jahr 1 ${pct(a.g1)}, ewiges Wachstum ${pctAbs(a.gT, 2)}, Prognosezeitraum ${a.years} Jahre${d.ok ? `, Endwertanteil ${pctAbs(d.tvShare, 0)}` : ""}, risikofreier Zins ${pctAbs(a.rf, 2)}.
+Kennzahlen: KGV ${c.eps > 0 ? de(c.price / c.eps, 1) : "n/a"} (eigener 5-Jahres-Median ${isNum(c.hist.pe) ? de(c.hist.pe, 1) : "n/a"}, Sektor ${isNum(c.sect.pe) ? de(c.sect.pe, 1) : "n/a"}), operative Marge ${pctAbs(c.om, 0)}, Kapitalrendite ${pctAbs(isNum(c.roic) ? c.roic : c.roe, 0)}, Dividendenrendite ${pctAbs(c.divY, 2)}, Ausschüttungsquote ${pctAbs(c.payout, 0)}, Volatilität ${pctAbs(c.vol, 0)}, Beta ${de(c.beta, 2)}.
+Qualitätsscore ${Math.round(q.score)}/100, Risikoscore ${Math.round(r.score)}/100${z.ok ? `, Altman Z ${de(z.z, 2)} (${z.zone})` : ""}, Modellstreuung ${pctAbs(v.base.spread || 0, 0)}.
+Burggraben: ${c.moat}
+Kapitalallokation: ${c.mgmt}
+Risiken: ${c.risks.join("; ")}.
+Klumpenrisiken: ${c.concentration.join("; ")}.
+Im Datensatz der Seite außerdem verfügbar: ${COMPANIES.map((x) => x.t).join(", ")}.`;
+}
+
+const CHAT_STARTERS = [
+  "Warum genau dieser Modellwert?",
+  "Was spricht dagegen?",
+  "Erklär mir den DCF ganz einfach",
+  "Wie riskant ist das?",
+];
+
+const SAMPLE_ERRORS = {
+  not_granted: "Sie haben dem Assistenten keinen Zugriff erlaubt. Laden Sie die Seite neu, um erneut gefragt zu werden.",
+  sampling_disabled: "Für dieses Konto steht der Assistent nicht zur Verfügung.",
+  not_declared: "Der Assistent ist in dieser Version der Seite nicht aktiviert.",
+  capability_disabled: "Der Assistent lässt sich in dieser Ansicht nicht ausführen.",
+  capability_removed: "Ihre Claude-App ist für diese Funktion zu alt.",
+  rate_limited: "Zu viele Anfragen in kurzer Zeit. Bitte einen Moment warten.",
+  session_expired: "Bitte melden Sie sich bei Claude neu an.",
+  refused: "Diese Anfrage wurde abgelehnt. Bitte anders formulieren.",
+  empty_completion: "Es kam keine Antwort zurück. Bitte kürzer oder konkreter fragen.",
+  prompt_too_large: "Der Gesprächsverlauf ist zu lang geworden. Bitte den Chat schließen und neu öffnen.",
+  upstream_error: "Verbindungsproblem. Bitte noch einmal senden.",
+  invalid_request: "Interner Fehler in der Anfrage.",
+};
+
+function ChatBot({ c, a, v, q, r, z, verdict, seed, onSeedUsed }) {
+  const [open, setOpen] = useState(!!seed);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [stream, setStream] = useState("");
+  const [err, setErr] = useState(null);
+  const [ready, setReady] = useState("laden");        // laden | ok | aus
+  const sampleRef = useRef(null);
+  const abortRef = useRef(null);
+  const bodyRef = useRef(null);
+  const lastTicker = useRef(c.t);
+
+  if (lastTicker.current !== c.t) {
+    lastTicker.current = c.t;
+    if (messages.length) {
+      setMessages((m) => [...m, { role: "sys", content: `Ansicht gewechselt zu ${c.t} — der Assistent bezieht sich ab jetzt auf diesen Wert.` }]);
+    }
+  }
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const fn = window.claude && window.claude.use ? await window.claude.use("sample") : null;
+        if (!alive) return;
+        sampleRef.current = fn;
+        setReady(fn ? "ok" : "aus");
+      } catch (e) {
+        if (alive) setReady("aus");
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  React.useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [messages, stream, busy, open]);
+
+  React.useEffect(() => {
+    if (seed && seed.text) {
+      setOpen(true);
+      send(seed.text);
+      if (onSeedUsed) onSeedUsed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed]);
+
+  async function send(text) {
+    const ask = (text ?? input).trim();
+    if (!ask || busy) return;
+    const fn = sampleRef.current;
+    setInput("");
+    setErr(null);
+    const history = [...messages, { role: "user", content: ask }];
+    setMessages(history);
+    if (!fn) {
+      setErr("Der Assistent ist in dieser Ansicht nicht verfügbar. Öffnen Sie die Seite über den Artifact-Link in Claude.");
+      return;
+    }
+    setBusy(true);
+    setStream("");
+    const ctl = new AbortController();
+    abortRef.current = ctl;
+    try {
+      const lead = pageInstructions(c, a, v, q, r, z, verdict);
+      const turns = [
+        { role: "user", content: lead },
+        ...history
+          .filter((m) => m.role === "user" || m.role === "bot")
+          .slice(-8)
+          .map((m) => ({ role: m.role === "bot" ? "assistant" : "user", content: m.content })),
+      ];
+      if (turns[turns.length - 1].role !== "user") turns.push({ role: "user", content: ask });
+      const res = await fn(turns, {
+        cache: false,
+        modelTier: "quick",
+        signal: ctl.signal,
+        onText: ({ text: t }) => setStream(t),
+      });
+      setMessages((m) => [...m, { role: "bot", content: res.text }]);
+    } catch (e) {
+      const code = e && e.code ? e.code : "upstream_error";
+      if (code === "cancelled") {
+        if (e.text) setMessages((m) => [...m, { role: "bot", content: e.text }, { role: "sys", content: "abgebrochen" }]);
+      } else {
+        if (e && e.text) setMessages((m) => [...m, { role: "bot", content: e.text }]);
+        setErr(SAMPLE_ERRORS[code] || "Unerwarteter Fehler: " + code);
+      }
+    } finally {
+      setStream("");
+      setBusy(false);
+      abortRef.current = null;
+    }
+  }
+
+  return (
+    <>
+      {!open && (
+        <button className="kb-chat-fab" onClick={() => setOpen(true)} aria-label="Analyse-Assistenten öffnen">
+          💬
+        </button>
+      )}
+      {open && (
+        <div className="kb-chat" role="dialog" aria-label={`Analyse-Assistent zu ${c.name}`}>
+          <div className="kb-chat-head">
+            <div>
+              <b>Assistent</b>
+              <span>kennt die Zahlen zu {c.t} · beantwortet auch allgemeine Fragen</span>
+            </div>
+            <button className="kb-chat-close" onClick={() => setOpen(false)} aria-label="Schließen">✕</button>
+          </div>
+          <div className="kb-chat-body" ref={bodyRef}>
+            {ready === "aus" && (
+              <div className="kb-msg sys">
+                Der Assistent ist hier nicht verfügbar. Er läuft nur, wenn die Seite über den Artifact-Link in Claude geöffnet wird.
+              </div>
+            )}
+            {messages.length === 0 && (
+              <div className="kb-chat-empty">
+                Fragen Sie, was Sie wollen: zu den berechneten Zahlen für {c.t}, zu Begriffen, zu anderen Unternehmen
+                oder einfach zum Verständnis. Tagesaktuelle Kurse und Nachrichten kennt der Assistent nicht.
+                <div className="qs">
+                  {CHAT_STARTERS.map((sq) => (
+                    <button key={sq} className="kb-btn" onClick={() => send(sq)}>{sq}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={"kb-msg " + m.role}>{m.content}</div>
+            ))}
+            {busy && (
+              <div className="kb-msg bot">
+                {stream || <div className="kb-typing"><i /><i /><i /></div>}
+              </div>
+            )}
+            {err && <div className="kb-msg sys">{err}</div>}
+          </div>
+          <div className="kb-chat-foot">
+            <textarea
+              rows={1}
+              placeholder="Frage eingeben…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            />
+            {busy ? (
+              <button className="kb-chat-send" onClick={() => abortRef.current && abortRef.current.abort()}>Stopp</button>
+            ) : (
+              <button className="kb-chat-send" onClick={() => send()} disabled={!input.trim() || ready !== "ok"}>Senden</button>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* --- Merkliste ------------------------------------------------------------ */
+function Watchlist({ watch, prices, onOpen, onToggle }) {
+  const rows = watch.map((t) => {
+    const b = BY_TICKER[t];
+    if (!b) return null;
+    const c = prices[t] != null ? { ...b, price: prices[t], priceCustom: true } : b;
+    const a = defaultAssumptions(c);
+    const v = valuation(c, a);
+    const q = quality(c);
+    const z = altman(c);
+    const rp = riskProfile(c, z, 0);
+    return { c, v, verdict: verdictOf(v.upside, q.score, rp.score) };
+  }).filter(Boolean);
+
+  return (
+    <>
+      <Panel title="Merkliste" sub={rows.length ? `${rows.length} ${rows.length === 1 ? "Wert" : "Werte"} · tippen zum Öffnen` : "Noch nichts gemerkt."}>
+        {rows.length === 0 ? (
+          <div className="kb-note" style={{ padding: "6px 0 2px", lineHeight: 1.6 }}>
+            Öffnen Sie einen Wert über die Suche und tippen Sie oben auf den Stern. Gemerkte Werte
+            erscheinen hier mit Kurs, Modellwert und Einschätzung — und bleiben auch nach dem
+            Schließen der Seite in diesem Browser erhalten.
+          </div>
+        ) : (
+          <div className="kb-wl">
+            {rows.map(({ c, v, verdict }) => (
+              <button key={c.t} onClick={() => onOpen(c.t)}>
+                <span
+                  className="kb-star" data-on="1" role="button" tabIndex={0}
+                  aria-label={`${c.t} aus der Merkliste entfernen`}
+                  onClick={(e) => { e.stopPropagation(); onToggle(c.t); }}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); onToggle(c.t); } }}
+                >★</span>
+                <span className="who">
+                  <b>{c.t}</b>
+                  <small>{c.name}{c.priceCustom ? " · eigener Kurs" : ""}</small>
+                </span>
+                <span className="fig">
+                  <b>{money(c.price, c.cur, 2)}</b>
+                  <small style={{ color: TONE[verdict.tone] }}>{pct(v.upside, 0)}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      {rows.length > 1 && (
+        <Panel title="Alle gemerkten Werte im Überblick" sub="Mit den Standardannahmen des jeweiligen Wertes gerechnet.">
+          <div className="kb-scroll">
+            <table className="kb-tbl">
+              <thead>
+                <tr><th>Wert</th><th>Kurs</th><th>Modellwert</th><th>Abweichung</th><th>Einschätzung</th></tr>
+              </thead>
+              <tbody>
+                {rows.map(({ c, v, verdict }) => (
+                  <tr key={c.t}>
+                    <td>{c.t}</td>
+                    <td>{money(c.price, c.cur, 0)}</td>
+                    <td>{money(v.base.fair, c.cur, 0)}</td>
+                    <td style={{ color: TONE[verdict.tone] }}>{pct(v.upside, 0)}</td>
+                    <td style={{ textAlign: "right", color: TONE[verdict.tone] }}>{verdict.label}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
+    </>
+  );
+}
+
+/* --- Handbuch: jeder Begriff der Seite, einfach erklärt --------------------- */
+const GLOSSARY = [
+  // Grundbegriffe
+  { k: "Grundbegriffe", t: "Aktie", d: "Ein Anteil an einem Unternehmen. Wer eine Aktie hält, besitzt einen winzigen Teil der Firma und damit einen Anspruch auf deren künftige Gewinne." },
+  { k: "Grundbegriffe", t: "Kurs", d: "Der Preis, zu dem die Aktie gerade gehandelt wird. Er sagt, was andere heute zahlen — nicht, was das Unternehmen wert ist.", r: "Kurs ist Preis, Wert ist etwas anderes. Genau diesen Unterschied rechnet diese Seite aus." },
+  { k: "Grundbegriffe", t: "Ticker", d: "Das Kürzel einer Aktie an der Börse, zum Beispiel AAPL für Apple oder VOW3 für Volkswagen Vorzüge." },
+  { k: "Grundbegriffe", t: "Marktkapitalisierung", d: "Kurs mal Anzahl aller Aktien. Das ist der Preis, den der Markt dem gesamten Eigenkapital der Firma gibt." },
+  { k: "Grundbegriffe", t: "Unternehmenswert (EV)", d: "Marktkapitalisierung plus Schulden minus Barmittel. Der Betrag, den ein Käufer für die ganze Firma inklusive Schuldenübernahme aufbringen müsste.", r: "Wichtig beim Vergleich von Firmen mit unterschiedlich viel Schulden." },
+  { k: "Grundbegriffe", t: "Nettoverschuldung", d: "Schulden minus vorhandene Barmittel. Ein negativer Wert bedeutet: Die Firma hat mehr Geld auf dem Konto als Schulden." },
+  { k: "Grundbegriffe", t: "Buchwert je Aktie", d: "Das bilanzielle Eigenkapital geteilt durch die Anzahl der Aktien. Grob: was rechnerisch übrig bliebe, wenn man alles verkauft und die Schulden bezahlt." },
+
+  // Ergebnis und Cashflow
+  { k: "Gewinn & Cashflow", t: "Gewinn je Aktie (EPS)", d: "Der Jahresgewinn geteilt durch die Anzahl der Aktien. Die Basis für das bekannteste Bewertungsmaß, das KGV." },
+  { k: "Gewinn & Cashflow", t: "Umsatz", d: "Alles, was die Firma eingenommen hat, bevor irgendwelche Kosten abgezogen wurden." },
+  { k: "Gewinn & Cashflow", t: "EBIT", d: "Gewinn vor Zinsen und Steuern. Zeigt, wie gut das eigentliche Geschäft läuft, unabhängig von Finanzierung und Steuersatz." },
+  { k: "Gewinn & Cashflow", t: "EBITDA", d: "Gewinn vor Zinsen, Steuern und Abschreibungen. Nützlich für Vergleiche, aber Vorsicht: Abschreibungen sind echte Kosten, die nur zeitversetzt anfallen." },
+  { k: "Gewinn & Cashflow", t: "Freier Cashflow", d: "Das Geld, das nach allen laufenden Ausgaben und Investitionen tatsächlich übrig bleibt. Damit kann die Firma Dividenden zahlen, Schulden tilgen oder Aktien zurückkaufen.", r: "Die wichtigste Zahl im DCF-Modell — Gewinn kann man buchhalterisch schönen, Cash nicht so leicht." },
+  { k: "Gewinn & Cashflow", t: "Bruttomarge", d: "Wie viel vom Umsatz nach den direkten Herstellkosten übrig bleibt, in Prozent. Hohe Bruttomargen deuten auf Preissetzungsmacht hin." },
+  { k: "Gewinn & Cashflow", t: "Operative Marge", d: "Wie viel vom Umsatz nach allen laufenden Kosten als operativer Gewinn übrig bleibt." },
+  { k: "Gewinn & Cashflow", t: "Kapitalrendite (ROIC)", d: "Wie viel Gewinn die Firma aus dem eingesetzten Kapital erwirtschaftet. Eine hohe, dauerhaft stabile Kapitalrendite ist das beste Zeichen für ein wirklich gutes Geschäft.", r: "Über 15 % gilt als stark, unter 8 % als schwach." },
+  { k: "Gewinn & Cashflow", t: "Eigenkapitalrendite (ROE)", d: "Gewinn im Verhältnis zum Eigenkapital. Kann durch hohe Schulden künstlich aufgebläht werden — deshalb immer zusammen mit der Verschuldung lesen." },
+
+  // Multiplikatoren
+  { k: "Multiplikatoren", t: "KGV (Kurs-Gewinn-Verhältnis)", d: "Kurs geteilt durch Gewinn je Aktie. Sagt, wie viele Jahresgewinne man für eine Aktie bezahlt.", r: "Ein KGV von 20 heißt: 20 Euro Preis je 1 Euro Jahresgewinn. Niedrig ist nicht automatisch billig — oft steckt ein Grund dahinter." },
+  { k: "Multiplikatoren", t: "KUV (Kurs-Umsatz-Verhältnis)", d: "Kurs geteilt durch Umsatz je Aktie. Hilfreich bei Firmen, die noch wenig oder schwankenden Gewinn machen." },
+  { k: "Multiplikatoren", t: "KBV (Kurs-Buchwert-Verhältnis)", d: "Kurs geteilt durch Buchwert je Aktie. Vor allem bei Banken, Versicherern und kapitalintensiven Firmen aussagekräftig." },
+  { k: "Multiplikatoren", t: "EV/EBITDA", d: "Unternehmenswert geteilt durch EBITDA. Der fairste Vergleich zwischen Firmen mit unterschiedlichen Schuldenständen." },
+  { k: "Multiplikatoren", t: "5-Jahres-Median", d: "Der mittlere Wert eines Multiplikators über die letzten fünf Jahre. Die Seite vergleicht die Aktie mit ihrer eigenen Vergangenheit, nicht nur mit anderen Firmen.", r: "Ein KGV über dem eigenen Median heißt: teurer als üblich für diese Aktie." },
+  { k: "Multiplikatoren", t: "Peers / Sektor", d: "Vergleichbare Unternehmen aus derselben Branche. Ein Multiplikator ist nur im Vergleich zu etwas aussagekräftig." },
+
+  // Bewertungsmodelle
+  { k: "Bewertungsmodelle", t: "Fair Value / Modellwert", d: "Der rechnerische Wert je Aktie, den die Modelle unter den eingestellten Annahmen ergeben. Kein Kursziel und keine Vorhersage — eine Rechnung, die mit den Annahmen steht und fällt." },
+  { k: "Bewertungsmodelle", t: "DCF-Modell", d: "Discounted Cashflow: Man schätzt alle künftigen freien Cashflows und rechnet sie auf heute zurück. Der Grundgedanke: Ein Unternehmen ist so viel wert wie das Geld, das es in Zukunft abwirft.", r: "Das theoretisch sauberste Verfahren — und zugleich das, das am stärksten auf Annahmen reagiert." },
+  { k: "Bewertungsmodelle", t: "Barwert", d: "Was ein künftiger Geldbetrag heute wert ist. 100 Euro in zehn Jahren sind heute weniger wert, weil man Geld zwischenzeitlich anlegen könnte." },
+  { k: "Bewertungsmodelle", t: "Diskontsatz / WACC", d: "Der Zinssatz, mit dem künftige Cashflows abgezinst werden — die Renditeforderung an das Investment. Je riskanter die Firma, desto höher.", r: "Ein Prozentpunkt mehr Diskontsatz kann den Modellwert leicht um 15–25 % senken. Deshalb der Regler." },
+  { k: "Bewertungsmodelle", t: "Risikofreier Zins", d: "Die Rendite sicherer Staatsanleihen. Ausgangspunkt jeder Renditeforderung: Für eine Aktie will man mehr als das." },
+  { k: "Bewertungsmodelle", t: "Risikoprämie", d: "Der Aufschlag, den Anleger über dem sicheren Zins für das Aktienrisiko verlangen. Diese Seite rechnet mit 4,5 Prozentpunkten." },
+  { k: "Bewertungsmodelle", t: "Beta", d: "Wie stark eine Aktie im Vergleich zum Gesamtmarkt schwankt. Beta 1 heißt: bewegt sich wie der Markt. Beta 2: doppelt so heftig in beide Richtungen." },
+  { k: "Bewertungsmodelle", t: "Ewiges Wachstum", d: "Die Rate, mit der ein Unternehmen nach dem Prognosezeitraum für immer weiterwachsen soll. Realistisch sind 1–3 % — auf Dauer kann keine Firma schneller wachsen als die Weltwirtschaft." },
+  { k: "Bewertungsmodelle", t: "Endwert (Terminal Value)", d: "Der Wert aller Cashflows nach dem Prognosezeitraum, zusammengefasst in einer Zahl. Bei den meisten Firmen steckt darin der größte Teil des DCF-Werts.", r: "Liegt der Endwertanteil über 75 %, beruht die Bewertung überwiegend auf Annahmen für eine ferne Zukunft." },
+  { k: "Bewertungsmodelle", t: "Exit-Multiplikator", d: "Alternative zum ewigen Wachstum: Statt unendlich weiterzurechnen, unterstellt man einen Verkaufspreis am Ende des Zeitraums als Vielfaches des EBITDA." },
+  { k: "Bewertungsmodelle", t: "Dividendendiskontierung (DDM)", d: "Bewertet die Aktie über die Summe aller künftigen Dividenden. Nur sinnvoll bei Firmen, die verlässlich viel ausschütten — die Seite verlangt dafür mindestens 2 % Rendite und 30 % Ausschüttungsquote." },
+  { k: "Bewertungsmodelle", t: "Graham-Formel", d: "Eine einfache Faustformel von Benjamin Graham aus Gewinn und Buchwert. Hier bewusst nur als grobe Gegenprobe mit kleinem Gewicht — sie setzt stabile Gewinne voraus." },
+  { k: "Bewertungsmodelle", t: "Gewichteter Modellwert", d: "Das Ergebnis aller anwendbaren Modelle, gewichtet nach ihrer Eignung für das jeweilige Geschäftsmodell. Modelle, die nicht passen, werden abgeschaltet statt verbogen." },
+  { k: "Bewertungsmodelle", t: "Modellstreuung", d: "Wie weit die einzelnen Modelle auseinanderliegen. Große Streuung heißt: Die Verfahren sind sich uneinig, jede einzelne Zahl wäre Scheingenauigkeit.", r: "Über 30 % Streuung: die Bandbreite ernster nehmen als den Mittelwert." },
+  { k: "Bewertungsmodelle", t: "Szenarien (Best / Base / Worst)", d: "Drei Rechnungen mit unterschiedlich optimistischen Annahmen. Statt einer Zahl bekommt man eine Bandbreite — das ist ehrlicher." },
+  { k: "Bewertungsmodelle", t: "Sensitivitätsanalyse", d: "Die Tabelle zeigt, wie sich der Modellwert ändert, wenn man Diskontsatz und ewiges Wachstum leicht verstellt. Sie macht sichtbar, wie wackelig jede Bewertung ist." },
+
+  // Qualität
+  { k: "Qualität", t: "Burggraben (Moat)", d: "Der dauerhafte Wettbewerbsvorteil einer Firma: Marke, Netzwerkeffekt, hohe Wechselkosten, Patente oder Größenvorteile. Er entscheidet, ob hohe Gewinne von Dauer sind.", r: "Ohne Burggraben ziehen Wettbewerber die Margen früher oder später nach unten." },
+  { k: "Qualität", t: "Wechselkosten", d: "Der Aufwand, den ein Kunde hätte, wenn er zur Konkurrenz wechselt. Bei Unternehmenssoftware ist er riesig, beim Supermarkt gleich null." },
+  { k: "Qualität", t: "Kapitalallokation", d: "Was das Management mit dem verdienten Geld macht: investieren, Dividende zahlen, Aktien zurückkaufen, zukaufen oder Schulden tilgen. Über Jahrzehnte oft wichtiger als das operative Geschäft." },
+  { k: "Qualität", t: "Dividendenrendite", d: "Jahresdividende geteilt durch den Kurs. Eine sehr hohe Rendite ist oft kein Geschenk, sondern ein Warnsignal für einen gefallenen Kurs." },
+  { k: "Qualität", t: "Ausschüttungsquote", d: "Welcher Anteil des Gewinns als Dividende ausgezahlt wird.", r: "Über 80 % bleibt kaum Puffer — in einem schwachen Jahr gerät die Dividende unter Druck." },
+  { k: "Qualität", t: "Aktienrückkauf", d: "Die Firma kauft eigene Aktien und vernichtet sie. Dadurch verteilt sich der Gewinn auf weniger Anteile, der Gewinn je Aktie steigt. Nur sinnvoll, wenn die Aktie nicht zu teuer ist." },
+  { k: "Qualität", t: "Zyklizität", d: "Wie stark das Geschäft von der Konjunktur abhängt. Autobauer und Chip-Hersteller schwanken massiv, Nahrungsmittel kaum.", r: "Bei Zyklikern ist ein niedriges KGV am Gewinnhoch typisch — und meist ein Warnzeichen." },
+
+  // Risiko
+  { k: "Risiko", t: "Volatilität", d: "Das Maß für die Kursschwankung, meist auf ein Jahr bezogen. 30 % Volatilität heißt: Bewegungen dieser Größenordnung nach oben oder unten sind normal, nicht außergewöhnlich." },
+  { k: "Risiko", t: "Altman Z-Score", d: "Eine Kennzahl aus fünf Bilanzgrößen, die das Insolvenzrisiko abschätzt.", r: "Über 2,99 gilt als sicher, 1,81 bis 2,99 als Grauzone, darunter als kritisch. Für Banken und Versicherer nicht anwendbar." },
+  { k: "Risiko", t: "Nettoschulden / EBITDA", d: "Wie viele Jahresgewinne die Firma bräuchte, um ihre Schulden zu tilgen.", r: "Unter 1x entspannt, über 3x wird es in schwachen Jahren eng." },
+  { k: "Risiko", t: "Eigenkapitalquote", d: "Der Anteil des Eigenkapitals an der Bilanzsumme. Je höher, desto mehr Verluste kann eine Firma aushalten, bevor es kritisch wird." },
+  { k: "Risiko", t: "Klumpenrisiko", d: "Eine starke Abhängigkeit von einem einzelnen Produkt, Kunden, Land oder Zulieferer. Läuft dort etwas schief, trifft es das ganze Unternehmen." },
+  { k: "Risiko", t: "Value Trap", d: "Eine Aktie, die billig aussieht, es aber zu Recht ist, weil das Geschäft dauerhaft schrumpft. Der Abschlag verschwindet nie, weil der Markt richtig lag.", r: "Verdacht immer dann, wenn niedrige Bewertung auf fallenden Gewinn und schwache Qualität trifft." },
+
+  // Optionen
+  { k: "Optionen", t: "Call", d: "Das Recht, eine Aktie zu einem festen Preis zu kaufen. Gewinnt an Wert, wenn der Kurs steigt." },
+  { k: "Optionen", t: "Put", d: "Das Recht, eine Aktie zu einem festen Preis zu verkaufen. Gewinnt an Wert, wenn der Kurs fällt — deshalb zur Absicherung genutzt." },
+  { k: "Optionen", t: "Strike", d: "Der vereinbarte Preis, zu dem eine Option ausgeübt werden kann." },
+  { k: "Optionen", t: "Implizite Volatilität", d: "Die Schwankung, die der Optionsmarkt für die Zukunft erwartet. Sie steckt im Optionspreis — hohe implizite Vola macht Optionen teuer." },
+  { k: "Optionen", t: "Volatilitäts-Skew", d: "Optionen auf fallende Kurse haben oft eine höhere implizite Vola als solche auf steigende. Der Markt zahlt einen Aufpreis für Absicherung nach unten." },
+  { k: "Optionen", t: "Open Interest", d: "Wie viele Optionskontrakte auf einen Strike gerade offen sind. Ein Anhaltspunkt dafür, wo sich Handelsinteresse ballt." },
+  { k: "Optionen", t: "Black-Scholes", d: "Das Standardmodell zur Berechnung eines fairen Optionspreises aus Kurs, Strike, Laufzeit, Zins und Volatilität." },
+  { k: "Optionen", t: "Leerverkauf (Short)", d: "Man verkauft geliehene Aktien und hofft, sie später billiger zurückkaufen zu können.", r: "Der Verlust ist nach oben unbegrenzt, weil ein Kurs unbegrenzt steigen kann. Dazu kommen Leihgebühren und Nachschusspflichten." },
+  { k: "Optionen", t: "Leerverkaufsquote", d: "Der Anteil der Aktien, der aktuell leerverkauft ist. Eine hohe Quote ist kein Kaufsignal für Shorts — sie erhöht das Risiko eines Short Squeeze." },
+  { k: "Optionen", t: "Short Squeeze", d: "Steigt der Kurs, müssen Leerverkäufer zurückkaufen — diese Käufe treiben den Kurs weiter nach oben. Eine Aufwärtsspirale, die Shorts schnell ruiniert." },
+
+  // Zur Seite selbst
+  { k: "Zu dieser Seite", t: "Merkliste", d: "Der Stern neben dem Firmennamen legt einen Wert auf die Merkliste. Der Reiter „Merkliste“ zeigt alle gemerkten Werte mit Kurs, Modellwert und Einschätzung untereinander.", r: "Merkliste und selbst eingetragene Kurse bleiben in diesem Browser gespeichert, auch nach dem Schließen." },
+  { k: "Zu dieser Seite", t: "Kurs anpassen", d: "Oben rechts neben dem Kurs. Tragen Sie den Kurs aus Ihrer Broker-App ein, und die ganze Seite rechnet damit: Modellwerte, Abweichung, Einschätzung, KGV, Sensitivität und der Assistent.", r: "So bekommen Sie eine Bewertung gegen den echten Tageskurs, ohne dass die Seite eine Kursanbindung braucht." },
+  { k: "Zu dieser Seite", t: "Demodaten", d: "Die Kennzahlen hier sind gerundete, illustrative Größenordnungen für 13 Beispielwerte — keine Live-Kurse und keine geprüften Bilanzdaten." },
+  { k: "Zu dieser Seite", t: "Kursverzögerung", d: "Echte Kursdaten sind bei kostenlosen Quellen typischerweise 15 Minuten verzögert. Für Bewertungen auf Jahressicht spielt das keine Rolle, für kurzfristigen Handel schon." },
+  { k: "Zu dieser Seite", t: "Assistent", d: "Der Chat unten rechts. Er bekommt automatisch alle berechneten Zahlen des angezeigten Werts mitgeliefert und beantwortet daneben auch allgemeine Fragen — zu Begriffen, anderen Unternehmen oder Zusammenhängen. Was er nicht hat: Internetzugriff, aktuelle Kurse, Nachrichten von heute.", r: "Er läuft über Ihr eigenes Claude-Konto und fragt beim ersten Mal um Erlaubnis." },
+  { k: "Zu dieser Seite", t: "Keine Anlageberatung", d: "Diese Seite dient der Information und Bildung. Sie kennt Ihre Situation und Ziele nicht und darf deshalb keine persönliche Empfehlung geben. Entscheidungen und Risiko liegen bei Ihnen." },
+];
+
+function Handbook() {
+  const [find, setFind] = useState("");
+  const q = find.trim().toLowerCase();
+  const hits = q
+    ? GLOSSARY.filter((g) => (g.t + " " + g.d + " " + (g.r || "")).toLowerCase().includes(q))
+    : GLOSSARY;
+  const cats = [];
+  hits.forEach((g) => { if (!cats.includes(g.k)) cats.push(g.k); });
+  return (
+    <Panel title="Handbuch" sub={`Jeder Begriff dieser Seite, in einfachen Worten. ${GLOSSARY.length} Einträge.`}>
+      <input
+        className="kb-hb-search"
+        value={find}
+        onChange={(e) => setFind(e.target.value)}
+        placeholder="Begriff suchen, etwa „KGV“ oder „Burggraben“"
+        style={{
+          width: "100%", background: "var(--panel2)", border: "1px solid var(--line)",
+          color: "var(--ink)", borderRadius: 14, padding: "12px 14px", fontSize: 14.5, outline: "none",
+        }}
+      />
+      {hits.length === 0 && (
+        <div className="kb-gl-empty">Kein Eintrag gefunden. Fragen Sie den Assistenten unten rechts — er erklärt auch Begriffe, die hier fehlen.</div>
+      )}
+      {cats.map((cat) => (
+        <div key={cat}>
+          <div className="kb-gl-cat">{cat}</div>
+          {hits.filter((g) => g.k === cat).map((g) => (
+            <div className="kb-gl-item" key={g.t}>
+              <b>{g.t}</b>
+              <p>{g.d}</p>
+              {g.r && <div className="rule">Faustregel: {g.r}</div>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </Panel>
+  );
+}
+
+/* ============================================================================
+   Anwendung
+   ========================================================================== */
+const TABS = [
+  ["bewertung", "Bewertung"],
+  ["qualitaet", "Qualität"],
+  ["risiko", "Risiko"],
+  ["optionen", "Optionen"],
+  ["fazit", "Fazit"],
+  ["merkliste", "Merkliste"],
+  ["vergleich", "Vergleich"],
+  ["handbuch", "Handbuch"],
+  ["daten", "Daten"],
+];
+
+function App() {
+  const [ticker, setTicker] = useState("AAPL");
+  const [a, setA] = useState(() => defaultAssumptions(BY_TICKER.AAPL));
+  const [tab, setTab] = useState("bewertung");
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [picks, setPicks] = useState(["AAPL", "MSFT", "KO"]);
+  const [chatSeed, setChatSeed] = useState(null);
+  const boxRef = useRef(null);
+
+  const load = loadCompany(ticker);
+  const base = load.data;
+  const [prices, setPrices] = useState(() => {       // vom Nutzer eingetragene Kurse je Ticker
+    try { return JSON.parse(localStorage.getItem("tra_prices") || "{}"); } catch (e) { return {}; }
+  });
+  const [watch, setWatch] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("tra_watch") || "[]"); } catch (e) { return []; }
+  });
+  React.useEffect(() => {
+    try { localStorage.setItem("tra_prices", JSON.stringify(prices)); } catch (e) {}
+  }, [prices]);
+  React.useEffect(() => {
+    try { localStorage.setItem("tra_watch", JSON.stringify(watch)); } catch (e) {}
+  }, [watch]);
+  const toggleWatch = (t) =>
+    setWatch((w) => (w.includes(t) ? w.filter((x) => x !== t) : [...w, t]));
+  const custom = prices[base.t] != null;
+  const c = useMemo(
+    () => (custom ? { ...base, price: prices[base.t], priceCustom: true } : base),
+    [base, prices, custom]
+  );
+  const setPrice = (val) =>
+    setPrices((p) => {
+      const next = { ...p };
+      if (val == null) delete next[base.t]; else next[base.t] = val;
+      return next;
+    });
+
+  const series = useMemo(() => priceSeries(c), [c]);
+  const mom6 = useMemo(() => momentum(series, 6), [series]);
+  const v = useMemo(() => valuation(c, a), [c, a]);
+  const qual = useMemo(() => quality(c), [c]);
+  const z = useMemo(() => altman(c), [c]);
+  const rp = useMemo(() => riskProfile(c, z, mom6), [c, z, mom6]);
+  const verdict = useMemo(() => verdictOf(v.upside, qual.score, rp.score), [v, qual, rp]);
+  const radar = useMemo(() => shortRadar(c, v, qual, mom6), [c, v, qual, mom6]);
+
+  const hits = query.trim()
+    ? COMPANIES.filter((x) =>
+        (x.t + " " + x.name + " " + x.sector).toLowerCase().includes(query.trim().toLowerCase())
+      ).slice(0, 6)
+    : [];
+
+  function select(t) {
+    setTicker(t);
+    setA(defaultAssumptions(BY_TICKER[t]));
+    setQuery("");
+    setOpen(false);
+    setTab("bewertung");
+    if (boxRef.current) boxRef.current.blur();
+  }
+  const toggle = (t) =>
+    setPicks((p) => (p.includes(t) ? p.filter((x) => x !== t) : p.length >= 4 ? p : [...p, t]));
+
+  return (
+    <div className="kb">
+      <style>{CSS}</style>
+
+      <div className="kb-top">
+        <div className="kb-wrap">
+          <div className="kb-brand">
+            <b>Trade Republic Analyser</b>
+            <span>unabhängiges Projekt, nicht mit der Trade Republic Bank GmbH verbunden · keine Anlageberatung</span>
+          </div>
+          <div className="kb-search">
+            <input
+              ref={boxRef}
+              value={query}
+              placeholder="Ticker oder Firmenname, etwa AAPL oder Allianz"
+              onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+              onFocus={() => setOpen(true)}
+              onKeyDown={(e) => { if (e.key === "Enter" && hits[0]) select(hits[0].t); if (e.key === "Escape") setOpen(false); }}
+            />
+            {open && query.trim() && (
+              <div className="kb-sug">
+                {hits.length > 0 ? (
+                  hits.map((x) => (
+                    <button key={x.t} onClick={() => select(x.t)}>
+                      <span>{x.name}</span>
+                      <small>{x.t} · {x.sector}</small>
+                    </button>
+                  ))
+                ) : (
+                  <button
+                    onClick={() => {
+                      setChatSeed({
+                        text: `Erzähl mir etwas über "${query.trim()}" — Geschäftsmodell, Ertragstreiber und Risiken. Diese Aktie ist nicht im Datensatz der Seite.`,
+                      });
+                      setOpen(false);
+                    }}
+                  >
+                    <span>Kein Datensatz gefunden — Assistenten fragen 💬</span>
+                    <small>Auskunft zu „{query.trim()}“ aus dem Wissen des Assistenten</small>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="kb-tabs">
+            {TABS.map(([k, label]) => (
+              <button key={k} data-on={tab === k ? "1" : "0"} onClick={() => setTab(k)}>{label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="kb-wrap">
+        {tab !== "vergleich" && tab !== "daten" && tab !== "handbuch" && tab !== "merkliste" && (
+          <Header c={c} v={v} verdict={verdict} onPrice={setPrice} custom={custom}
+            watched={watch.includes(base.t)} onWatch={() => toggleWatch(base.t)} />
+        )}
+
+        {tab === "bewertung" && (
+          <>
+            <Chart c={c} v={v} series={series} />
+            <Assumptions c={c} a={a} set={setA} />
+            <Models c={c} v={v} />
+            <Context c={c} v={v} a={a} series={series} />
+          </>
+        )}
+        {tab === "qualitaet" && <Quality c={c} q={qual} />}
+        {tab === "risiko" && <Risk c={c} v={v} a={a} r={rp} z={z} />}
+        {tab === "optionen" && <Options c={c} a={a} radar={radar} mom6={mom6} />}
+        {tab === "fazit" && (
+          <Conclusion c={c} v={v} q={qual} r={rp} z={z} verdict={verdict} mom6={mom6} a={a} />
+        )}
+        {tab === "merkliste" && (
+          <Watchlist watch={watch} prices={prices} onToggle={toggleWatch}
+            onOpen={(t) => { select(t); }} />
+        )}
+        {tab === "vergleich" && <Compare picks={picks} toggle={toggle} />}
+        {tab === "handbuch" && <Handbook />}
+        {tab === "daten" && <DataTab c={c} />}
+
+        <div className="kb-foot">
+          Unabhängiges, privates Projekt ohne Verbindung zur Trade Republic Bank GmbH; der Name wird nur beschreibend verwendet.
+          Keine Anlageberatung. Alle Angaben ohne Gewähr, Kurse nicht in Echtzeit (im Live-Betrieb typisch
+          15 Minuten verzögert). Modellwerte hängen vollständig von den eingestellten Annahmen ab und sind keine
+          Prognose. Wertpapiere können bis zum Totalverlust fallen; Leerverkäufe können darüber hinaus zu
+          Verlusten führen, die den Einsatz übersteigen. Sie entscheiden selbst und tragen das Risiko allein.
+        </div>
+      </div>
+
+      <ChatBot c={c} a={a} v={v} q={qual} r={rp} z={z} verdict={verdict}
+        seed={chatSeed} onSeedUsed={() => setChatSeed(null)} />
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+
+</script>
+
+<script>
+(function () {
+  function load(urls, cb) {
+    var i = 0;
+    (function next() {
+      if (i >= urls.length) return fail("Bibliothek nicht erreichbar: " + urls[0]);
+      var s = document.createElement("script");
+      s.src = urls[i++]; s.onload = cb; s.onerror = next;
+      document.head.appendChild(s);
+    })();
+  }
+  function soft(url, cb) {           // optional: fehlt er, läuft die Seite trotzdem
+    var s = document.createElement("script");
+    s.src = url; s.onload = cb; s.onerror = function () { cb(); };
+    document.head.appendChild(s);
+  }
+  function fail(msg) {
+    document.getElementById("root").innerHTML =
+      '<div id="boot"><b>Laden fehlgeschlagen</b>' + msg +
+      '<br><br>Diese Datei braucht beim Öffnen eine Internetverbindung.</div>';
+  }
+  var R = ["https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js",
+           "https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"];
+  var D = ["https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js",
+           "https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"];
+  var B = ["https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.3/babel.min.js",
+           "https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.3/babel.min.js"];
+  load(R, function () { load(D, function () { load(B, function () {
+    soft("https://s3.tradingview.com/tv.js", function () {
+      try {
+        var code = Babel.transform(document.getElementById("app-src").textContent,
+          { presets: [["react", { runtime: "classic" }]] }).code;
+        var s = document.createElement("script");
+        s.textContent = code;
+        document.body.appendChild(s);
+      } catch (e) { fail("Fehler beim Übersetzen: " + e.message); }
+    });
+  }); }); });
+})();
+</script>
+</body>
+</html>
